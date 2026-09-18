@@ -1,0 +1,8 @@
+services:
+  blind-review-desk:
+    build: .
+    image: blind-review-desk:latest
+    container_name: blind-review-desk
+    ports:
+      - "8080:80"
+    restart: unless-stopped

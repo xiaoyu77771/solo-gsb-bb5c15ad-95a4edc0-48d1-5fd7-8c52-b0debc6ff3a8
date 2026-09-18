@@ -1,0 +1,27 @@
+{
+  "name": "blind-review-desk",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "盲审分配台 - 浏览器本地运行的稿件评审自动分配工具 (ILP)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "selftest": "esbuild scripts/selftest.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/selftest.mjs --log-level=warning && node node_modules/.cache/selftest.mjs",
+    "smoke": "esbuild scripts/rendersmoke.ts --bundle --platform=node --format=cjs --outfile=node_modules/.cache/smoke.cjs --log-level=warning --loader:.css=empty && node node_modules/.cache/smoke.cjs"
+  },
+  "dependencies": {
+    "javascript-lp-solver": "^1.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
