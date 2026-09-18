@@ -505,6 +505,10 @@ body {
   background: var(--green-soft);
   color: #7ae3bd;
 }
+.mini-tag--red {
+  background: rgba(255, 107, 107, 0.16);
+  color: #ff9a9a;
+}
 .assignee-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1245,4 +1249,105 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+}
+
+/* ---------------- 必覆盖主题（稿件多选 / 结果覆盖明细 / 失败诊断） ---------------- */
+.must-cover-box {
+  margin: 8px 0 4px;
+  padding: 9px 12px;
+  border: 1px dashed rgba(158, 193, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(158, 193, 255, 0.05);
+}
+.must-cover-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+.must-cover-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #cfe0ff;
+}
+.must-cover-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.must-cover-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 3px 11px;
+  border-radius: 20px;
+  border: 1px solid rgba(158, 193, 255, 0.3);
+  background: rgba(255, 255, 255, 0.03);
+  color: #c6d4ee;
+  cursor: pointer;
+}
+.must-cover-option:hover {
+  border-color: rgba(158, 193, 255, 0.7);
+}
+.must-cover-option--on {
+  background: rgba(158, 193, 255, 0.18);
+  border-color: rgba(158, 193, 255, 0.85);
+  color: #e8f0ff;
+  font-weight: 700;
+}
+.must-cover-check {
+  font-size: 12px;
+}
+.coverage-box {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: rgba(52, 211, 153, 0.07);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+}
+.coverage-box--bad {
+  background: rgba(255, 107, 107, 0.08);
+  border-color: rgba(255, 107, 107, 0.4);
+}
+.coverage-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cfeede;
+  white-space: nowrap;
+}
+.coverage-box--bad .coverage-label {
+  color: #ffc4c4;
+}
+.coverage-union {
+  font-size: 11px;
+  flex-basis: 100%;
+}
+.coverage-reason-card {
+  border-color: rgba(255, 107, 107, 0.45);
+}
+.coverage-missing-table {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.coverage-missing-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.coverage-missing-paper {
+  font-weight: 700;
+  font-size: 13px;
+  min-width: 160px;
 }

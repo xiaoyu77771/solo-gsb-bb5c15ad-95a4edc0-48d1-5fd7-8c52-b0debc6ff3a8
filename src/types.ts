@@ -7,6 +7,12 @@ export interface Paper {
   reviewsRequired: number
   /** 主题标签 */
   tags: string[]
+  /**
+   * 必覆盖主题（多选，候选仅限该稿件已有标签）：生成分派时，
+   * 分给该稿件的全部评审人擅长标签的并集（命中标签）必须覆盖这里的每一个主题。
+   * 旧数据缺省为 []（无必覆盖主题）；存储中残留但已不在 tags 中的值在归一化时剔除。
+   */
+  mustCoverTags?: string[]
 }
 
 export interface Reviewer {
@@ -64,6 +70,7 @@ export type InfeasibleKind =
   | 'paper-eligible'
   | 'subset-bottleneck'
   | 'preassignment'
+  | 'topic-coverage'
 
 /** 预指派关系在“生成分派”预检时被发现的具体问题（逐条列出稿件、评审人与原因） */
 export interface PreAssignmentIssue {
@@ -101,6 +108,28 @@ export interface InfeasibleReason {
   deficit?: number
   /** preassignment: 逐条预指派问题 */
   issues?: PreAssignmentIssue[]
+  /**
+   * topic-coverage: 无法覆盖的必覆盖主题明细（逐稿列出缺失主题）。
+   * 每个元素给出一篇稿件 id、标题及其缺失的必覆盖主题标签；
+   * 缺失主题来自“在满足其余全部硬约束的前提下，最多能满足多少必覆盖主题”的见证求解，
+   * 因而必然存在一个不可同时满足的必覆盖主题组合。
+   */
+  missingCoverage?: Array<{ paperId: string; paperTitle?: string; missingTags: string[] }>
+}
+
+/** 单篇稿件的必覆盖主题覆盖明细（结果页与 JSON 导出共用） */
+export interface PaperCoverage {
+  paperId: string
+  /** 该稿件设置的必覆盖主题（归一化后；无必覆盖主题时为空数组） */
+  requiredTags: string[]
+  /** 实际被分派评审人命中标签并集覆盖到的必覆盖主题 */
+  coveredTags: string[]
+  /** 未被覆盖的必覆盖主题；成功结果中恒为空数组 */
+  missingTags: string[]
+  /** 该稿件全部分派评审人命中标签的并集 */
+  unionMatchedTags: string[]
+  /** 是否全部必覆盖主题均被覆盖（无必覆盖主题时为 true） */
+  satisfied: boolean
 }
 
 export interface AssignmentSuccess {
@@ -119,6 +148,8 @@ export interface AssignmentSuccess {
   manuallyAdjusted?: boolean
   /** 累计执行的一换一互换次数（仅用于展示与导出追溯） */
   swapCount?: number
+  /** 逐稿必覆盖主题覆盖明细（求解引擎在结果构建时统一计算） */
+  coverageByPaper: PaperCoverage[]
 }
 
 export interface AssignmentFailure {

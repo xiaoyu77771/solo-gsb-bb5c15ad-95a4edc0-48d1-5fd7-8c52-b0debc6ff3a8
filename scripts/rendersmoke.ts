@@ -236,6 +236,65 @@ console.log('✓ 示例数据渲染成功，长度', html2.length)
   console.log('✓ 备选无法凑满（停止原因 + 保留方案）渲染成功')
 }
 
+// 必覆盖主题：稿件卡片渲染多选（候选仅限已有标签）；成功结果展示逐稿覆盖明细；无法覆盖时整体停止
+{
+  const base = createSampleData()
+  // 示例数据每篇都设有必覆盖主题
+  const papersHtml = renderToString(
+    React.createElement(PapersPanel, {
+      papers: base.papers,
+      reviewers: base.reviewers,
+      preAssignments: base.preAssignments,
+      onChange: () => {},
+      onAddPreAssignment: () => {},
+      onRemovePreAssignment: () => {},
+      conflictCountOf: () => 0
+    })
+  )
+  if (!papersHtml.includes('必覆盖主题')) throw new Error('必覆盖主题多选区未渲染')
+  if (!papersHtml.includes('NLP')) throw new Error('必覆盖候选标签未渲染')
+  console.log('✓ 稿件面板（必覆盖主题多选）渲染成功')
+
+  const solved = solveAssignment(base)
+  if (!solved.feasible) throw new Error('示例数据（含必覆盖）应可生成可行方案')
+  if (!solved.coverageByPaper.every((c) => c.satisfied)) throw new Error('示例数据必覆盖主题应全部满足')
+  const okHtml = renderToString(
+    React.createElement(ResultPanel, { data: base, result: solved, stale: false, onExport: () => {}, onApplySwap: () => {} })
+  )
+  if (!okHtml.includes('必覆盖主题')) throw new Error('结果页未展示覆盖明细')
+  if (!okHtml.includes('已全部覆盖')) throw new Error('覆盖明细未显示已覆盖状态')
+  if (!okHtml.includes('命中标签并集')) throw new Error('覆盖明细未展示命中并集')
+  console.log('✓ 成功结果（逐稿必覆盖明细）渲染成功')
+
+  // 必覆盖无法满足：整体停止，结果区指出稿件与缺失主题
+  const failData: AppData = {
+    papers: [{ id: 'q1', title: '无人覆盖稿', reviewsRequired: 1, tags: ['冷门方向'], mustCoverTags: ['冷门方向'] }],
+    reviewers: [
+      { id: 'x', name: 'X', organization: '', tags: [], capacity: 1, conflictPaperIds: [] },
+      { id: 'y', name: 'Y', organization: '', tags: [], capacity: 1, conflictPaperIds: [] }
+    ],
+    preAssignments: []
+  }
+  const fail = solveAssignment(failData)
+  if (fail.feasible) throw new Error('无人可命中必覆盖主题时应整体停止')
+  const failHtml = renderToString(
+    React.createElement(ResultPanel, { data: failData, result: fail, stale: false, onExport: () => {}, onApplySwap: () => {} })
+  )
+  if (!failHtml.includes('必覆盖主题无法满足')) throw new Error('覆盖失败原因标签未渲染')
+  if (!failHtml.includes('冷门方向')) throw new Error('缺失主题未渲染')
+  if (!failHtml.includes('无人覆盖稿')) throw new Error('缺失稿件未渲染')
+  if (failHtml.includes('assignee')) throw new Error('覆盖失败不应含分派结果')
+  console.log('✓ 必覆盖无法覆盖（整体停止 + 指出稿件/缺失主题）渲染成功')
+
+  // 导出含逐稿覆盖明细
+  const payload = buildExportPayload(base, solved)
+  if (!Array.isArray(payload.paperCoverage)) throw new Error('导出缺少 paperCoverage')
+  if (payload.paperCoverage.length !== base.papers.length) throw new Error('导出覆盖明细篇数异常')
+  if (!payload.paperCoverage.every((c) => c.satisfied && c.requiredTags.length > 0))
+    throw new Error('导出覆盖明细字段异常')
+  console.log('✓ JSON 导出（paperCoverage 覆盖明细）渲染成功')
+}
+
 // 旧数据兼容：localStorage 中没有 preAssignments 字段时，应用仍可正常渲染与求解
 {
   const legacy = { papers: createSampleData().papers, reviewers: createSampleData().reviewers }

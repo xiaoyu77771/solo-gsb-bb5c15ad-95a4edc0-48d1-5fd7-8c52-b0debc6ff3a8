@@ -52,7 +52,8 @@ export function SwapTool({ data, result, onApply, guard }: SwapToolProps) {
         <p className="muted swap-desc">
           选择两位<strong>已有任务</strong>的评审人，枚举其任务之间所有一换一候选；
           自动排除同稿（交换后组合不变）、交换后触发利益冲突、让同一评审人重复承担同一稿件、
-          让<strong>同一稿件出现同一机构两位评审人</strong>（机构去重硬约束）的项，
+          让<strong>同一稿件出现同一机构两位评审人</strong>（机构去重硬约束）、
+          或让某篇稿件的<strong>必覆盖主题</strong>不再被命中标签并集覆盖的项，
           以及<strong>预指派</strong>分派（硬约束不允许互换换走）
           {guard && guard.otherEdgeSets.length > 0 && (
             <>
@@ -135,12 +136,14 @@ export function SwapTool({ data, result, onApply, guard }: SwapToolProps) {
               enumeration.excluded.duplicate +
               enumeration.excluded.organization +
               enumeration.excluded.preassigned +
+              enumeration.excluded.coverage +
               enumeration.excluded.diversity >
               0) && (
               <span className="muted">
                 （已排除：同稿/组合不变 {enumeration.excluded.samePaper}，利益冲突 {enumeration.excluded.conflict}
                 ，重复承担 {enumeration.excluded.duplicate}，同机构 {enumeration.excluded.organization}
                 ，预指派 {enumeration.excluded.preassigned}
+                ，破坏必覆盖 {enumeration.excluded.coverage}
                 {enumeration.excluded.diversity > 0 && `，备选差异不足 ${enumeration.excluded.diversity}`}）
               </span>
             )}

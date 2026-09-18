@@ -28,8 +28,13 @@ function migrate(raw: unknown): AppData | null {
   const reviewers: Reviewer[] = (parsed.reviewers as Reviewer[]).map((r) =>
     r && typeof r === 'object' ? { ...r, organization: typeof r.organization === 'string' ? r.organization : '' } : r
   )
+  // 旧本地数据稿件可能缺少必覆盖主题字段：按“无必覆盖主题”加载；
+  // 非数组脏数据同样补全为 []，求解归一化时还会剔除已不属于稿件标签的残留值。
+  const papers = (parsed.papers as import('./types').Paper[]).map((p) =>
+    p && typeof p === 'object' ? { ...p, mustCoverTags: Array.isArray(p.mustCoverTags) ? p.mustCoverTags : [] } : p
+  )
   return {
-    papers: parsed.papers,
+    papers,
     reviewers,
     preAssignments
   }

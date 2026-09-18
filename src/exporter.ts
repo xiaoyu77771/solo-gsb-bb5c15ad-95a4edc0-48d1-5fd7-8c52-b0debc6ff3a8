@@ -33,6 +33,21 @@ export interface ExportPayload {
     /** 是否来自预指派硬约束（非预指派缺省为 false） */
     preassigned: boolean
   }>
+  /** 逐稿必覆盖主题覆盖明细：每篇稿件的必覆盖主题、实际被覆盖主题、缺失主题与命中标签并集 */
+  paperCoverage: Array<{
+    paperId: string
+    paperTitle: string
+    /** 该稿件设置的必覆盖主题（旧数据 / 未设置时为空数组） */
+    requiredTags: string[]
+    /** 被分派评审人命中标签并集覆盖到的必覆盖主题 */
+    coveredTags: string[]
+    /** 未被覆盖的必覆盖主题（成功结果恒为空数组） */
+    missingTags: string[]
+    /** 该稿件全部分派评审人命中标签的并集 */
+    unionMatchedTags: string[]
+    /** 是否全部必覆盖主题均被覆盖（无必覆盖主题时为 true） */
+    satisfied: boolean
+  }>
   reviewerLoads: Array<{
     reviewerId: string
     reviewerName: string
@@ -66,6 +81,15 @@ export function buildExportPayload(
       topicMatched: a.topicMatched,
       matchedTags: a.matchedTags,
       preassigned: a.preassigned === true
+    })),
+    paperCoverage: (result.coverageByPaper ?? []).map((c) => ({
+      paperId: c.paperId,
+      paperTitle: paperMap.get(c.paperId)?.title ?? c.paperId,
+      requiredTags: c.requiredTags,
+      coveredTags: c.coveredTags,
+      missingTags: c.missingTags,
+      unionMatchedTags: c.unionMatchedTags,
+      satisfied: c.satisfied
     })),
     reviewerLoads: result.loads.map((l) => ({
       reviewerId: l.reviewerId,

@@ -22,7 +22,8 @@ const kindLabel: Record<string, string> = {
   'global-capacity': '全局容量不足',
   'paper-eligible': '单篇稿件可分配人数不足',
   'subset-bottleneck': '组合性瓶颈（局部容量不足）',
-  preassignment: '预指派硬约束无法满足'
+  preassignment: '预指派硬约束无法满足',
+  'topic-coverage': '必覆盖主题无法满足'
 }
 
 const issueLabel: Record<string, string> = {
@@ -58,7 +59,8 @@ export function ResultPanel({ data, result, stale, onExport, onApplySwap, active
         <ul>
           <li>
             <strong>硬约束</strong>：预指派必须入选、利益冲突回避、评审人容量上限、每篇稿件所需评审人数、
-            同一篇稿件对每个机构至多选择一人（空机构除外），五者必须全部满足；
+            同一篇稿件对每个机构至多选择一人（空机构除外），以及每篇稿件的<strong>必覆盖主题</strong>
+            （所选评审人命中标签并集必须全部覆盖），全部必须满足；
           </li>
           <li>
             <strong>优化目标</strong>：先最大化主题标签匹配，再最小化评审人最大负载（负载均衡）。
@@ -167,12 +169,39 @@ export function ResultPanel({ data, result, stale, onExport, onApplySwap, active
 
 function FailureView({ result }: { result: Extract<AssignmentResult, { feasible: false }> }) {
   const preReason = result.reasons.find((r) => r.kind === 'preassignment')
+  const coverageReason = result.reasons.find((r) => r.kind === 'topic-coverage')
   return (
     <section>
       <div className="result-banner result-banner--fail">
         <h2>✕ 无法生成可行分配</h2>
         <p>以下硬约束无法同时满足，请按提示调整数据后重新生成（不会生成任何部分结果）：</p>
       </div>
+      {coverageReason && (
+        <div className="reason-list">
+          <div className="reason-card coverage-reason-card">
+            <span className="reason-kind">{kindLabel['topic-coverage']}</span>
+            <p className="reason-message">{coverageReason.message}</p>
+            {coverageReason.missingCoverage && coverageReason.missingCoverage.length > 0 && (
+              <div className="coverage-missing-table">
+                {coverageReason.missingCoverage.map((m, i) => (
+                  <div className="coverage-missing-row" key={`${m.paperId}-${i}`}>
+                    <span className="coverage-missing-paper">
+                      {m.paperTitle ? `《${m.paperTitle}》` : `（稿件 ${m.paperId}）`}
+                    </span>
+                    <span className="mini-tags">
+                      {m.missingTags.map((t) => (
+                        <span className="mini-tag mini-tag--red" key={t}>
+                          ✕ {t}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {preReason?.issues && preReason.issues.length > 0 && (
         <div className="reason-list">
           <div className="reason-card preassignment-reason-card">
@@ -226,7 +255,7 @@ function FailureView({ result }: { result: Extract<AssignmentResult, { feasible:
             })()}
           </div>
           {result.reasons
-            .filter((r) => r.kind !== 'preassignment')
+            .filter((r) => r.kind !== 'preassignment' && r.kind !== 'topic-coverage')
             .map((r, i) => (
               <div className="reason-card" key={i}>
                 <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
@@ -237,12 +266,14 @@ function FailureView({ result }: { result: Extract<AssignmentResult, { feasible:
       )}
       {!preReason && (
         <div className="reason-list">
-          {result.reasons.map((r, i) => (
-            <div className="reason-card" key={i}>
-              <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
-              <p className="reason-message">{r.message}</p>
-            </div>
-          ))}
+          {result.reasons
+            .filter((r) => r.kind !== 'topic-coverage')
+            .map((r, i) => (
+              <div className="reason-card" key={i}>
+                <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
+                <p className="reason-message">{r.message}</p>
+              </div>
+            ))}
         </div>
       )}
     </section>
@@ -345,6 +376,9 @@ function SolutionView({
           .filter((p) => p.reviewsRequired > 0)
           .map((p) => {
             const items = byPaper.get(p.id) ?? []
+            const coverage = solution.coverageByPaper?.find((c) => c.paperId === p.id)
+            const mustCover = p.mustCoverTags ?? []
+            const coveredKeys = new Set((coverage?.coveredTags ?? []).map((t) => t.toLowerCase()))
             return (
               <div className="card assignment-card" key={p.id}>
                 <div className="assignment-title">
@@ -360,6 +394,31 @@ function SolutionView({
                     ))}
                   </div>
                 </div>
+                {mustCover.length > 0 && (
+                  <div className={`coverage-box ${coverage?.satisfied === false ? 'coverage-box--bad' : ''}`}>
+                    <span className="coverage-label">
+                      🎯 必覆盖主题 {coverage?.satisfied === false ? '· 未完全覆盖' : '· 已全部覆盖'}（
+                      {coverage?.coveredTags.length ?? 0}/{mustCover.length}）
+                    </span>
+                    <span className="mini-tags">
+                      {mustCover.map((t) => (
+                        <span
+                          className={`mini-tag ${coveredKeys.has(t.toLowerCase()) ? 'mini-tag--green' : 'mini-tag--red'}`}
+                          key={t}
+                          title={coveredKeys.has(t.toLowerCase()) ? '已被分派评审人命中标签并集覆盖' : '未被任何分派评审人覆盖'}
+                        >
+                          {coveredKeys.has(t.toLowerCase()) ? '✓' : '✕'} {t}
+                        </span>
+                      ))}
+                    </span>
+                    {coverage && coverage.unionMatchedTags.length > 0 && (
+                      <span className="muted coverage-union">
+                        命中标签并集：
+                        {coverage.unionMatchedTags.map((t) => `「${t}」`).join('、')}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="assignee-list">
                   {items.map((a) => {
                     const rv = reviewerMap.get(a.reviewerId)

@@ -39,7 +39,7 @@ export function PapersPanel({
   const add = () =>
     onChange([
       ...papers,
-      { id: createId('paper'), title: `稿件 ${papers.length + 1}`, reviewsRequired: 2, tags: [] }
+      { id: createId('paper'), title: `稿件 ${papers.length + 1}`, reviewsRequired: 2, tags: [], mustCoverTags: [] }
     ])
 
   // 派生预指派状态（有效 / 失效）。失效关系不会被静默丢弃。
@@ -176,6 +176,9 @@ function PaperCard({
         <TagInput tags={paper.tags} onChange={(tags) => onUpdate(paper.id, { tags })} placeholder="如：机器学习、NLP" />
       </div>
 
+      {/* ---- 必覆盖主题（多选，候选仅限该稿件已有标签） ---- */}
+      {paper.tags.length > 0 && <MustCoverPicker paper={paper} onUpdate={onUpdate} />}
+
       {/* ---- 预指派：0 至所需人数位必须参加评审的评审人（硬约束） ---- */}
       <div className="preassign-box">
         <div className="preassign-head-row">
@@ -267,6 +270,61 @@ function PaperCard({
       {conflictCount > 0 && (
         <div className="conflict-note">⚠ {conflictCount} 位评审人已声明与该稿件存在利益冲突</div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 必覆盖主题多选：候选仅限该稿件已有标签。
+ * 勾选的主题为生成分派的硬约束——分给本稿的评审人命中标签并集必须覆盖全部所选主题；
+ * 标签被删除/改名后，残留的选择自动剔除（不再展示、保存时归一化同样兜底）。
+ */
+function MustCoverPicker({
+  paper,
+  onUpdate
+}: {
+  paper: Paper
+  onUpdate: (id: string, patch: Partial<Paper>) => void
+}) {
+  const selected = new Set((paper.mustCoverTags ?? []).map((t) => t.toLowerCase()))
+  // 已选但标签已不存在（残留值）：不展示为可选项；归一化与存储读取时会剔除
+  const toggle = (tag: string) => {
+    const key = tag.toLowerCase()
+    const current = paper.mustCoverTags ?? []
+    const next = selected.has(key)
+      ? current.filter((t) => t.toLowerCase() !== key)
+      : [...current, tag]
+    onUpdate(paper.id, { mustCoverTags: next })
+  }
+
+  return (
+    <div className="must-cover-box">
+      <div className="must-cover-head">
+        <span className="must-cover-title">🎯 必覆盖主题（多选）</span>
+        <span className="muted">
+          {selected.size > 0
+            ? `已选 ${selected.size} 个 · 分派给本稿评审人的命中标签并集必须全部覆盖`
+            : '未设置 · 勾选后成为生成分派的硬约束（候选仅限上方已有标签）'}
+        </span>
+      </div>
+      <div className="must-cover-options">
+        {paper.tags.map((tag) => {
+          const on = selected.has(tag.toLowerCase())
+          return (
+            <button
+              type="button"
+              key={tag}
+              className={`must-cover-option ${on ? 'must-cover-option--on' : ''}`}
+              aria-pressed={on}
+              onClick={() => toggle(tag)}
+              title={on ? '点击取消该必覆盖主题' : '点击设为必覆盖主题'}
+            >
+              <span className="must-cover-check">{on ? '☑' : '☐'}</span>
+              {tag}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }

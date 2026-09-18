@@ -36,7 +36,7 @@ import type {
 export function stressFingerprint(data: AppData, precomputed?: HardConstraintEvaluation): string {
   const hc = precomputed ?? evaluateHardConstraints(data)
   const papers = hc.papers
-    .map((p) => `${p.id}|${p.title}|${p.reviewsRequired}|${[...p.tags].sort().join(',')}`)
+    .map((p) => `${p.id}|${p.title}|${p.reviewsRequired}|${[...p.tags].sort().join(',')}|${[...(p.mustCoverTags ?? [])].sort().join(',')}`)
     .sort()
   const reviewers = hc.reviewers
     .map(
