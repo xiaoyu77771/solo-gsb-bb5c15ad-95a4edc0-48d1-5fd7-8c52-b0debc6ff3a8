@@ -246,3 +246,79 @@ console.log('✓ 示例数据渲染成功，长度', html2.length)
   if (!solved.feasible || solved.objective.preassignedCount !== 0) throw new Error('旧数据求解/预指派缺省值异常')
   console.log('✓ 旧数据（无 preAssignments 字段）兼容正常')
 }
+
+// 必覆盖主题：稿件编辑区有多选；不可行时整体停止并指出稿件与缺失主题；成功结果/导出含逐稿覆盖明细
+{
+  // 可行：p1 必覆盖 机器学习、NLP；Bob 命中两者，Alice 对 p1 冲突 → Bob 必评 p1
+  const data: AppData = {
+    papers: [
+      { id: 'q1', title: '必覆盖稿', reviewsRequired: 2, tags: ['机器学习', 'NLP'], requiredTopicTags: ['机器学习', 'NLP'] },
+      { id: 'q2', title: '普通稿', reviewsRequired: 1, tags: ['数据库'], requiredTopicTags: [] }
+    ],
+    reviewers: [
+      { id: 'x1', name: '甲', organization: '', tags: ['机器学习', 'NLP'], capacity: 3, conflictPaperIds: [] },
+      { id: 'x2', name: '乙', organization: '', tags: ['机器学习'], capacity: 3, conflictPaperIds: ['q1'] },
+      { id: 'x3', name: '丙', organization: '', tags: [], capacity: 3, conflictPaperIds: [] }
+    ],
+    preAssignments: []
+  }
+  const papersHtml = renderToString(
+    React.createElement(PapersPanel, {
+      papers: data.papers,
+      reviewers: data.reviewers,
+      preAssignments: [],
+      onChange: () => {},
+      onAddPreAssignment: () => {},
+      onRemovePreAssignment: () => {},
+      conflictCountOf: () => 0
+    })
+  )
+  if (!papersHtml.includes('必覆盖主题')) throw new Error('必覆盖主题多选区未渲染')
+  if (!papersHtml.includes('机器学习') || !papersHtml.includes('NLP')) throw new Error('必覆盖候选标签未渲染')
+  console.log('✓ 稿件面板必覆盖主题多选渲染成功')
+
+  const solved = solveAssignment(data)
+  if (!solved.feasible) throw new Error('必覆盖可行数据应生成结果')
+  const cov = solved.paperCoverage.find((c) => c.paperId === 'q1')
+  if (!cov || !cov.satisfied || cov.coveredTopics.length !== 2) throw new Error('成功结果覆盖明细异常')
+  const okHtml = renderToString(
+    React.createElement(ResultPanel, { data, result: solved, stale: false, onExport: () => {}, onApplySwap: () => {} })
+  ).replace(/<!--[^>]*-->/g, '')
+  if (!okHtml.includes('必覆盖主题')) throw new Error('结果页未展示覆盖明细')
+  if (!okHtml.includes('全部 2 项已覆盖')) throw new Error('覆盖完成状态未渲染')
+  const payload = buildExportPayload(data, solved)
+  if (payload.paperCoverage.length !== 2) throw new Error('导出缺少逐稿覆盖明细')
+  const pc1 = payload.paperCoverage.find((c) => c.paperId === 'q1')!
+  if (!pc1.satisfied || pc1.requiredTopics.length !== 2 || !pc1.coveredBy['NLP']) throw new Error('导出覆盖明细内容异常')
+  const pc2 = payload.paperCoverage.find((c) => c.paperId === 'q2')!
+  if (pc2.requiredTopics.length !== 0 || !pc2.satisfied) throw new Error('无必覆盖主题稿件的导出明细异常')
+  console.log('✓ 必覆盖成功结果页与 JSON 覆盖明细渲染成功')
+
+  // 不可行：q1 必覆盖 NLP，但唯一能命中 NLP 的甲被回避；整体停止、指出稿件与缺失主题
+  const bad: AppData = {
+    ...data,
+    papers: [{ id: 'q1', title: '必覆盖稿', reviewsRequired: 2, tags: ['机器学习', 'NLP'], requiredTopicTags: ['NLP'] }],
+    reviewers: [
+      { id: 'x1', name: '甲', organization: '', tags: ['机器学习', 'NLP'], capacity: 3, conflictPaperIds: ['q1'] },
+      { id: 'x2', name: '乙', organization: '', tags: ['机器学习'], capacity: 3, conflictPaperIds: [] },
+      { id: 'x3', name: '丙', organization: '', tags: [], capacity: 3, conflictPaperIds: [] }
+    ]
+  }
+  const fail = solveAssignment(bad)
+  if (fail.feasible) throw new Error('必覆盖无法满足时应整体停止')
+  const failHtml = renderToString(
+    React.createElement(ResultPanel, { data: bad, result: fail, stale: false, onExport: () => {}, onApplySwap: () => {} })
+  ).replace(/<!--[^>]*-->/g, '')
+  if (!failHtml.includes('必覆盖主题无法满足')) throw new Error('必覆盖失败横幅未渲染')
+  if (!failHtml.includes('NLP')) throw new Error('缺失主题未渲染')
+  if (!failHtml.includes('必覆盖稿')) throw new Error('缺失主题对应稿件未渲染')
+  if (failHtml.includes('assignee')) throw new Error('必覆盖失败不应含分派结果')
+  console.log('✓ 必覆盖不可行（指出稿件与缺失主题、整体停止）渲染成功')
+
+  // 旧数据稿件缺 requiredTopicTags 字段：默认无必覆盖，覆盖明细为空但结构存在
+  const legacyPaper = { papers: [{ id: 'l1', title: '旧稿', reviewsRequired: 1, tags: ['X'] }], reviewers: data.reviewers, preAssignments: [] }
+  const legacySolved = solveAssignment(legacyPaper as unknown as AppData)
+  if (!legacySolved.feasible) throw new Error('旧稿件数据应可求解')
+  if (legacySolved.paperCoverage[0].requiredTopics.length !== 0) throw new Error('旧稿件默认必覆盖主题应为空')
+  console.log('✓ 旧稿件（无 requiredTopicTags 字段）默认无必覆盖主题')
+}

@@ -9,9 +9,11 @@ import type {
   AssignmentSuccess,
   InfeasibleReason,
   Paper,
+  PaperCoverage,
   PreAssignment,
   Reviewer,
-  ReviewerLoad
+  ReviewerLoad,
+  TopicCoverageIssue
 } from '../types'
 
 /** 标签规范化：去空白、去重，大小写不敏感保留首次写法 */
@@ -39,12 +41,30 @@ interface Normalized {
 
 function normalize(data: AppData): Normalized {
   const papers: Paper[] = data.papers
-    .map((p) => ({
-      ...p,
-      title: p.title.trim(),
-      tags: normalizeTags(p.tags),
-      reviewsRequired: Math.max(0, Math.floor(Number.isFinite(p.reviewsRequired) ? p.reviewsRequired : 0))
-    }))
+    .map((p) => {
+      const tags = normalizeTags(p.tags)
+      // 必覆盖主题：沿用同一套标签归一化，且候选仅限该稿件已有标签
+      //（残留项：已从 tags 删除 / 大小写或空白写法变化后的旧选择，按归一化后的键重新对齐；无法对齐者丢弃）
+      const tagKeys = new Set(tags.map(tagKey))
+      const required: string[] = []
+      const requiredSeen = new Set<string>()
+      for (const raw of Array.isArray(p.requiredTopicTags) ? p.requiredTopicTags : []) {
+        const v = (raw ?? '').trim()
+        if (!v) continue
+        const key = v.toLowerCase()
+        if (!tagKeys.has(key) || requiredSeen.has(key)) continue
+        requiredSeen.add(key)
+        // 保留稿件侧标签当前写法（而不是旧选择时的写法），保证结果/导出与稿件标签展示一致
+        required.push(tags.find((t) => tagKey(t) === key)!)
+      }
+      return {
+        ...p,
+        title: p.title.trim(),
+        tags,
+        requiredTopicTags: required,
+        reviewsRequired: Math.max(0, Math.floor(Number.isFinite(p.reviewsRequired) ? p.reviewsRequired : 0))
+      }
+    })
     .filter((p) => p.title.length > 0 && p.reviewsRequired > 0)
 
   const reviewers: Reviewer[] = data.reviewers
@@ -88,6 +108,65 @@ export function computeMatchedTags(paper: Paper, reviewer: Reviewer): string[] {
   )
 }
 
+/** 稿件的必覆盖主题（归一化：去空白、按小写键去重，且仅限该稿件已有标签；保留稿件侧当前写法） */
+export function requiredTopicsOf(paper: Paper): string[] {
+  const tags = normalizeTags(paper.tags)
+  const tagKeys = new Set(tags.map(tagKey))
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of Array.isArray(paper.requiredTopicTags) ? paper.requiredTopicTags : []) {
+    const v = (raw ?? '').trim()
+    if (!v) continue
+    const key = v.toLowerCase()
+    if (!tagKeys.has(key) || seen.has(key)) continue
+    seen.add(key)
+    out.push(tags.find((t) => tagKey(t) === key)!)
+  }
+  return out
+}
+
+/**
+ * 计算一份分派结果在单篇稿件上的“必覆盖主题”覆盖明细：
+ * 该稿全部被分派评审人的命中标签并集，对每个必覆盖主题逐一判定是否覆盖。
+ * 输入可为未经归一化的原始数据（内部复用同一套标签归一化）。
+ */
+export function computePaperCoverage(
+  paper: Paper,
+  assignedReviewers: Reviewer[],
+  /** 预归一化的必覆盖主题；缺省现场归一化 */
+  required?: string[]
+): PaperCoverage {
+  const requiredTopics = required ?? requiredTopicsOf(paper)
+  const normPaper = { ...paper, tags: normalizeTags(paper.tags) }
+  const union = new Set<string>()
+  const byReviewer = assignedReviewers.map((r) => {
+    const matched = matchedTagsOf(normPaper, { ...r, tags: normalizeTags(r.tags) })
+    for (const t of matched) union.add(tagKey(t))
+    return { reviewerId: r.id, matchedKeys: new Set(matched.map(tagKey)) }
+  })
+  const coveredTopics: string[] = []
+  const missingTopics: string[] = []
+  const coveredBy: Record<string, string[]> = {}
+  for (const topic of requiredTopics) {
+    const hit = byReviewer.filter((x) => x.matchedKeys.has(tagKey(topic))).map((x) => x.reviewerId)
+    if (hit.length > 0) {
+      coveredTopics.push(topic)
+      coveredBy[topic] = hit
+    } else {
+      missingTopics.push(topic)
+      coveredBy[topic] = []
+    }
+  }
+  return {
+    paperId: paper.id,
+    requiredTopics,
+    coveredTopics,
+    missingTopics,
+    satisfied: missingTopics.length === 0,
+    coveredBy
+  }
+}
+
 /**
  * 硬约束评估结果。
  * 可行性、不可行原因与归一化后的输入一并返回，供分配主流程与缺席压力测试复用。
@@ -119,6 +198,8 @@ export interface HardConstraintEvaluation {
    * 自由分配不得再从这些机构中为该稿件选择评审人（同稿每机构至多一人）。
    */
   blockedOrgsByPaper: Set<string>[]
+  /** 每篇稿件归一化后的必覆盖主题（稿件侧写法）；无必覆盖主题的稿件为空数组 */
+  requiredTopicsByPaper: string[][]
 }
 
 /**
@@ -212,6 +293,8 @@ export function evaluateHardConstraints(rawData: AppData): HardConstraintEvaluat
     }
     return s
   })
+  // 必覆盖主题（归一化阶段已把候选限定在该稿件标签内、按稿件侧写法对齐）
+  const requiredTopicsByPaper = papers.map((p) => (p.requiredTopicTags ?? []).slice())
 
   const emptyEval = (reasons: InfeasibleReason[]): HardConstraintEvaluation => ({
     feasible: false,
@@ -228,7 +311,8 @@ export function evaluateHardConstraints(rawData: AppData): HardConstraintEvaluat
     forced,
     residualCapacities,
     residualDemands,
-    blockedOrgsByPaper
+    blockedOrgsByPaper,
+    requiredTopicsByPaper
   })
 
   // 残量网络输入（自由边 + 机构封禁），预检诊断与正式可行性判定共用同一口径
@@ -354,9 +438,42 @@ export function evaluateHardConstraints(rawData: AppData): HardConstraintEvaluat
     })
   }
 
+  // ---- 必覆盖主题检验（ILP；与预指派/冲突/容量/人数/机构去重共同求解）----
+  // 最大流网络只能表达“选谁评”的容量约束，无法表达“命中标签并集须覆盖指定主题”，
+  // 因此覆盖性用与正式优化同一套 ILP（runPhase，无目标切割）单独判可行。
+  let coverageFeasible = true
+  let coverageReason: InfeasibleReason | undefined
+  if (feas.feasible && requiredTopicsByPaper.some((t) => t.length > 0)) {
+    const coveragePhase = runPhase(
+      papers,
+      reviewers,
+      eligible,
+      organizations,
+      demands,
+      totalRequired,
+      null,
+      forced,
+      [],
+      requiredTopicsByPaper
+    )
+    if (!coveragePhase.feasible) {
+      coverageFeasible = false
+      coverageReason = diagnoseCoverageFailure(
+        papers,
+        reviewers,
+        eligible,
+        organizations,
+        demands,
+        totalRequired,
+        forced,
+        requiredTopicsByPaper
+      )
+    }
+  }
+
   return {
-    feasible: feas.feasible,
-    reasons: feas.feasible ? [] : [...perPaperFailures, ...reasons],
+    feasible: feas.feasible && coverageFeasible,
+    reasons: coverageFeasible ? (feas.feasible ? [] : [...perPaperFailures, ...reasons]) : [...(coverageReason ? [coverageReason] : [])],
     papers,
     reviewers,
     preAssignments,
@@ -369,8 +486,121 @@ export function evaluateHardConstraints(rawData: AppData): HardConstraintEvaluat
     forced,
     residualCapacities,
     residualDemands,
-    blockedOrgsByPaper
+    blockedOrgsByPaper,
+    requiredTopicsByPaper
   }
+}
+
+/**
+ * 必覆盖主题不可行诊断：指出具体稿件与缺失主题。
+ *
+ * 对每个设置了必覆盖主题的 (稿件 i, 主题 t) 分别运行一次“只强制该单条覆盖约束、
+ * 其余全部硬约束不变”的 ILP：
+ *  - 若该单约束 ILP 仍不可行，则在任何可行分派中 t 都无法被 i 覆盖（严格不可覆盖：
+ *    无人能命中、命中者全部冲突/同机构被封禁/容量或预指派占死）；
+ *  - 若单约束可解但全部覆盖同时求解不可行，则是跨稿件容量竞争（稀缺的命中评审人
+ *    无法同时服务所有稿件），相应稿件主题计入“竞争型缺口”并给出放宽建议。
+ * 廉价预判（并集为空）先行，可直接判定严格不可覆盖而无需再跑 ILP。
+ */
+function diagnoseCoverageFailure(
+  papers: Paper[],
+  reviewers: Reviewer[],
+  eligible: boolean[][],
+  organizations: string[],
+  demands: number[],
+  totalRequired: number,
+  forced: ForcedMatrix,
+  requiredTopicsByPaper: string[][]
+): InfeasibleReason {
+  const issues: TopicCoverageIssue[] = []
+
+  for (let i = 0; i < papers.length; i++) {
+    const required = requiredTopicsByPaper[i]
+    if (required.length === 0) continue
+
+    // 廉价预判：无冲突（且不违反预指派封禁）的可命中评审人并集
+    const unionReachable = (t: string): boolean => {
+      const key = tagKey(t)
+      const blocked = new Set<string>()
+      for (const j of forced.forcedByPaperIndex[i]) {
+        if (organizations[j]) blocked.add(organizations[j])
+      }
+      const countedOrgs = new Set<string>()
+      for (let j = 0; j < reviewers.length; j++) {
+        if (!eligible[i][j]) continue
+        // 预指派评审人必然在位，直接计入；不占用机构名额之外的额外判定
+        if (forced.forcedByPaperIndex[i].has(j)) {
+          if (reviewers[j].tags.some((rt) => tagKey(rt) === key)) return true
+          continue
+        }
+        const org = organizations[j]
+        if (org) {
+          if (blocked.has(org) || countedOrgs.has(org)) continue
+          countedOrgs.add(org)
+        }
+        if (reviewers[j].tags.some((rt) => tagKey(rt) === key)) return true
+      }
+      return false
+    }
+
+    const strictMissing: string[] = []
+    const contestedMissing: string[] = []
+    for (const t of required) {
+      if (!unionReachable(t)) {
+        strictMissing.push(t)
+        continue
+      }
+      // 单约束 ILP：全局只保留“稿件 i 覆盖主题 t”这一条覆盖约束
+      //（其他稿件的必覆盖主题暂时全部放开；人数/容量/冲突/机构/预指派仍全部生效）。
+      // 不可行即说明在任何全局分派中该主题都无法被该稿件覆盖；可行而联合模型不可行则是跨稿容量竞争。
+      const probe = requiredTopicsByPaper.map((_, k) => (k === i ? [t] : []))
+      const r = runPhase(papers, reviewers, eligible, organizations, demands, totalRequired, null, forced, [], probe)
+      if (!r.feasible) strictMissing.push(t)
+      else contestedMissing.push(t)
+    }
+
+    if (strictMissing.length > 0) {
+      issues.push({
+        paperId: papers[i].id,
+        paperTitle: papers[i].title,
+        missingTopics: strictMissing,
+        strictlyUncoverable: true
+      })
+    } else if (contestedMissing.length > 0) {
+      issues.push({
+        paperId: papers[i].id,
+        paperTitle: papers[i].title,
+        missingTopics: contestedMissing,
+        strictlyUncoverable: false
+      })
+    }
+  }
+
+  const strict = issues.filter((x) => x.strictlyUncoverable)
+  const contested = issues.filter((x) => !x.strictlyUncoverable)
+  const paperIds = issues.map((x) => x.paperId)
+
+  const strictLines = strict.map(
+    (x) => `  · 《${x.paperTitle}》缺失主题：${x.missingTopics.map((t) => `「${t}」`).join('、')}`
+  )
+  const contestedLines = contested.map(
+    (x) => `  · 《${x.paperTitle}》缺失主题：${x.missingTopics.map((t) => `「${t}」`).join('、')}`
+  )
+
+  const message =
+    `必覆盖主题硬约束无法满足：分给稿件的评审人命中标签并集必须覆盖该稿设置的全部必覆盖主题。\n` +
+    (strict.length > 0
+      ? `以下 ${strict.length} 篇稿件的部分主题在当前数据下没有任何可选评审人能命中` +
+        `（已计入利益冲突回避、每稿每机构至多一人、预指派占住的名额与评审人容量）：\n${strictLines.join('\n')}\n` +
+        `请为相应稿件补充擅长这些主题的评审人、解除利益冲突，或调整预指派 / 机构与容量设置。\n`
+      : '') +
+    (contested.length > 0
+      ? `以下 ${contested.length} 篇稿件的主题虽各有评审人能命中，但在全部硬约束共同求解时` +
+        `（命中者还要同时服务其他稿件、受容量与机构去重限制）无法同时覆盖：\n${contestedLines.join('\n')}\n` +
+        `请提高相关评审人容量、补充能命中这些主题的评审人，或放宽部分必覆盖主题。`
+      : '')
+
+  return { kind: 'topic-coverage', message, paperIds, coverageIssues: issues }
 }
 
 /**
@@ -382,7 +612,9 @@ export function evaluateHardConstraints(rawData: AppData): HardConstraintEvaluat
  *  3. 容量：每位评审人承担稿件数不超过 capacity（含被预指派预占的名额）；
  *  4. 人数：每篇稿件恰好得到 reviewsRequired 位互不相同的评审人；
  *  5. 机构去重：同一篇稿件至多选择每个机构（去首尾空白后相同的非空机构名）一人；
- *     机构为空的评审人不受此限，且空值之间互不合并（仅代表本人）。
+ *     机构为空的评审人不受此限，且空值之间互不合并（仅代表本人）；
+ *  6. 必覆盖主题：每篇稿件可从其已有标签中多选“必覆盖主题”；分给该稿件的评审人
+ *     命中标签的并集必须覆盖全部所选主题（无必覆盖主题的稿件不受此约束）。
  *
  * 优化目标（硬约束满足后）:
  *  第一优先 最大化稿件主题标签与评审人擅长标签的匹配数；
@@ -396,8 +628,23 @@ export function solveAssignment(rawData: AppData): AssignmentResult {
   }
 
   // ---- 硬约束可行：用整数规划做目标优化（预指派关系作为强制变量） ----
-  // 单方案模式不带多样性切割，最大流已保证可行，optimize 不会返回 null
-  return optimize(hc.papers, hc.reviewers, hc.eligible, hc.organizations, hc.demands, hc.totalRequired, hc.forced)!
+  // 单方案模式不带多样性切割，预检（最大流 + 覆盖 ILP）已证明可行；
+  // optimize 仅在求解器/兜底启发式双双异常时才可能返回 null，此时如实报告而非产出违规结果。
+  const result = optimize(hc.papers, hc.reviewers, hc.eligible, hc.organizations, hc.demands, hc.totalRequired, hc.forced)
+  if (!result) {
+    return {
+      feasible: false,
+      reasons: [
+        {
+          kind: 'topic-coverage',
+          message:
+            '硬约束预检通过，但优化器本次未能构造出完整满足全部约束（含必覆盖主题）的分派。' +
+            '请重试生成；若问题持续，请检查容量、必覆盖主题与机构设置。'
+        }
+      ]
+    }
+  }
+  return result
 }
 
 /**
@@ -533,6 +780,10 @@ interface PhaseSolution {
  * 机构去重以“每（稿件,非空机构）Σ x ≤ 1”的行约束加入（机构成员节点-关联阵依旧全幺模）；
  * 空机构不生成此类约束，因此空值仅代表本人。
  *
+ * 必覆盖主题以“每（稿件 i，必覆盖主题 t）Σ_{j 命中 t} x[i][j] ≥ 1”的行约束加入。
+ * 该约束破坏全幺模性（集合覆盖型行），求解器按需做整数分支；规模仍为
+ * （稿件数 × 每稿必覆盖主题数）行，与机构行数同量级。
+ *
  * cuts（备选方案模式）为每个已生成方案增加一行“不得重复多于 T−⌈N/2⌉ 条旧关系”：
  * 两方案分派总数相同，对称差 = 2 × 仅属于其一的关系数，⌈N/2⌉ 即单侧最少不同数。
  * 加入切割行后矩阵不再保证全幺模，求解器按需做整数分支（规模仍为同一数量级）。
@@ -546,7 +797,8 @@ function runPhase(
   totalRequired: number,
   capLimit: number | null,
   forced: ForcedMatrix,
-  cuts: DiversityCut[] = []
+  cuts: DiversityCut[] = [],
+  requiredTopicsByPaper: string[][] = papers.map((p) => p.requiredTopicTags ?? [])
 ): PhaseSolution {
   const P = papers.length
   const R = reviewers.length
@@ -596,17 +848,25 @@ function runPhase(
       model.constraints[`org_${i}_${org}`] = { max: 1 }
     }
   }
+  // 必覆盖主题硬约束行：cover_{i}_{tIdx}: Σ 命中该主题的 x ≥ 1。
+  // 行只对“稿件 i 与评审人 j 命中该主题”的变量赋系数 1（见下方变量构造）。
+  for (let i = 0; i < P; i++) {
+    requiredTopicsByPaper[i].forEach((t, ti) => {
+      model.constraints[`cover_${i}_${ti}_${tagKey(t)}`] = { min: 1 }
+    })
+  }
 
   for (let i = 0; i < P; i++) {
     for (let j = 0; j < R; j++) {
       if (!eligible[i][j]) continue // 冲突对不生成变量 —— 硬约束：利益冲突
       const varName = `x_${i}_${j}`
-      const matched = matchedTagsOf(papers[i], reviewers[j]).length > 0
+      const matched = matchedTagsOf(papers[i], reviewers[j])
+      const matchedKeys = new Set(matched.map(tagKey))
       model.binaries[varName] = 1
       model.variables[varName] = {
         [`paper_${i}`]: 1,
         [`reviewer_${j}`]: 1,
-        objective: matched ? 1 : 0
+        objective: matched.length > 0 ? 1 : 0
       }
       if (forced.forcedKeys.has(`${i}_${j}`)) {
         model.variables[varName][`pre_${i}_${j}`] = 1
@@ -614,6 +874,12 @@ function runPhase(
       if (organizations[j]) {
         model.variables[varName][`org_${i}_${organizations[j]}`] = 1
       }
+      // 必覆盖主题：该评审人在该稿件上命中哪些必覆盖主题，就给对应覆盖行系数 1
+      requiredTopicsByPaper[i].forEach((t, ti) => {
+        if (matchedKeys.has(tagKey(t))) {
+          model.variables[varName][`cover_${i}_${ti}_${tagKey(t)}`] = 1
+        }
+      })
       // 多样性切割行：仅在旧方案中出现的变量系数为 1
       cuts.forEach((cut, ci) => {
         if (cut.keys.has(`${i}_${j}`)) model.variables[varName][`cut_${ci}`] = 1
@@ -661,6 +927,7 @@ function parseSolution(
 }
 
 function buildSuccess(
+  papers: Paper[],
   reviewers: Reviewer[],
   assignments: AssignmentItem[],
   totalRequired: number
@@ -673,10 +940,23 @@ function buildSuccess(
     capacity: r.capacity
   }))
 
+  const sorted = [...assignments].sort((a, b) => a.paperId.localeCompare(b.paperId) || a.reviewerId.localeCompare(b.reviewerId))
+  const byPaper = new Map<string, AssignmentItem[]>()
+  for (const a of sorted) byPaper.set(a.paperId, [...(byPaper.get(a.paperId) ?? []), a])
+  // 必覆盖主题覆盖明细（逐稿；入参 papers/reviewers 已归一化，直接复用其 requiredTopicTags）
+  const paperCoverage: PaperCoverage[] = papers.map((p) => {
+    const items = byPaper.get(p.id) ?? []
+    const assignedReviewers = items
+      .map((a) => reviewers.find((r) => r.id === a.reviewerId))
+      .filter((r): r is Reviewer => !!r)
+    return computePaperCoverage(p, assignedReviewers, p.requiredTopicTags ?? [])
+  })
+
   return {
     feasible: true,
-    assignments: [...assignments].sort((a, b) => a.paperId.localeCompare(b.paperId) || a.reviewerId.localeCompare(b.reviewerId)),
+    assignments: sorted,
     loads,
+    paperCoverage,
     objective: {
       topicMatches: assignments.filter((a) => a.topicMatched).length,
       maxLoad: Math.max(0, ...loads.map((l) => l.assigned)),
@@ -699,11 +979,14 @@ function optimize(
 ): AssignmentSuccess | null {
   const R = reviewers.length
   const hasCuts = cuts.length > 0
+  // 必覆盖主题（papers 已归一化；默认参数即取此值，这里显式计算供防御性复核与贪心兜底复用）
+  const requiredTopicsByPaper = papers.map((p) => p.requiredTopicTags ?? [])
 
   // 阶段一：真实容量下最大化主题匹配数（预指派变量固定为 1），得到最优匹配数 M*
   const phase1 = runPhase(papers, reviewers, eligible, organizations, demands, totalRequired, null, forced, cuts)
 
-  // 无切割时：理论上最大流已保证可行，求解器异常可退回贪心可行解；
+  // 无切割时：预检（evaluateHardConstraints 的覆盖 ILP + 最大流）已保证可行；
+  // 仅在求解器异常时退回覆盖感知的贪心可行解。
   // 带多样性切割时“不可行”是停止找备选的正常信号，且贪心不保证满足切割，只能返回 null。
   if (!phase1.feasible) {
     return hasCuts ? null : greedyFallback(papers, reviewers, eligible, organizations, demands, totalRequired, forced)
@@ -746,7 +1029,19 @@ function optimize(
   if (hasDuplicateOrganization(papers, reviewers, assignments)) {
     return hasCuts ? null : greedyFallback(papers, reviewers, eligible, organizations, demands, totalRequired, forced)
   }
-  return buildSuccess(reviewers, assignments, totalRequired)
+  // 防御性校验：每篇稿件的必覆盖主题必须全部被命中标签并集覆盖（ILP 已保证，此处兜底求解器异常）
+  const byPaper = new Map<string, AssignmentItem[]>()
+  for (const a of assignments) byPaper.set(a.paperId, [...(byPaper.get(a.paperId) ?? []), a])
+  const coverageOk = papers.every((p, i) => {
+    if (requiredTopicsByPaper[i].length === 0) return true
+    const items = byPaper.get(p.id) ?? []
+    const assignedRv = items.map((a) => reviewers.find((r) => r.id === a.reviewerId)!).filter(Boolean)
+    return computePaperCoverage(p, assignedRv, requiredTopicsByPaper[i]).satisfied
+  })
+  if (!coverageOk) {
+    return hasCuts ? null : greedyFallback(papers, reviewers, eligible, organizations, demands, totalRequired, forced)
+  }
+  return buildSuccess(papers, reviewers, assignments, totalRequired)
 }
 
 /** 结果层机构去重复核：同一稿件出现两个去空白后相同的非空机构评审人即视为违规 */
@@ -765,7 +1060,11 @@ function hasDuplicateOrganization(papers: Paper[], reviewers: Reviewer[], assign
   return false
 }
 
-/** 求解器异常时的兜底：先放入全部预指派，再按主题匹配优先、当前负载最低贪心选取（最大流已保证存在可行解） */
+/**
+ * 求解器异常时的兜底：先放入全部预指派，再贪心选取（最大流 + 覆盖 ILP 已保证存在可行解）。
+ * 选取优先级：先尽量覆盖该稿尚未满足的“必覆盖主题”，再按主题匹配、当前负载最低；
+ * 每选一人后重排候选（边际覆盖数会变化）。贪心只在求解器异常时触发，仅求得到合法可行解。
+ */
 function greedyFallback(
   papers: Paper[],
   reviewers: Reviewer[],
@@ -774,56 +1073,75 @@ function greedyFallback(
   demands: number[],
   totalRequired: number,
   forced: ForcedMatrix
-): AssignmentSuccess {
+): AssignmentSuccess | null {
   const assigned = new Map<string, number>(reviewers.map((r) => [r.id, 0]))
   const assignments: AssignmentItem[] = []
   const placed = new Set<string>()
   // 每篇稿件已占住的非空机构（预指派先行占位，自由选取不得再选同机构者）
   const usedOrgsByPaper = papers.map(() => new Set<string>())
+  // 每篇稿件已被（含预指派）覆盖的必覆盖主题键
+  const coveredKeysByPaper = papers.map(() => new Set<string>())
+
+  const place = (i: number, j: number, preassigned: boolean) => {
+    const matched = matchedTagsOf(papers[i], reviewers[j])
+    assignments.push({
+      paperId: papers[i].id,
+      reviewerId: reviewers[j].id,
+      topicMatched: matched.length > 0,
+      matchedTags: matched,
+      preassigned: preassigned || undefined
+    })
+    assigned.set(reviewers[j].id, (assigned.get(reviewers[j].id) ?? 0) + 1)
+    placed.add(`${i}_${j}`)
+    if (organizations[j]) usedOrgsByPaper[i].add(organizations[j])
+    for (const t of matched) coveredKeysByPaper[i].add(tagKey(t))
+  }
 
   // 预指派先无条件占位（预检已保证其不冲突、不超额、无同稿重复机构）
   for (let i = 0; i < papers.length; i++) {
-    for (const j of forced.forcedByPaperIndex[i]) {
-      const matched = matchedTagsOf(papers[i], reviewers[j])
-      assignments.push({
-        paperId: papers[i].id,
-        reviewerId: reviewers[j].id,
-        topicMatched: matched.length > 0,
-        matchedTags: matched,
-        preassigned: true
-      })
-      assigned.set(reviewers[j].id, (assigned.get(reviewers[j].id) ?? 0) + 1)
-      placed.add(`${i}_${j}`)
-      if (organizations[j]) usedOrgsByPaper[i].add(organizations[j])
-    }
+    for (const j of forced.forcedByPaperIndex[i]) place(i, j, true)
   }
 
-  const ordered = [...papers].sort((a, b) => b.reviewsRequired - a.reviewsRequired)
-  for (const paper of ordered) {
-    const i = papers.indexOf(paper)
-    const need = demands[i] - forced.forcedByPaperIndex[i].size
-    const choices = reviewers
-      .map((r, j) => ({ r, j, matched: matchedTagsOf(paper, r) }))
-      // 机构去重：与该稿件已占位（含预指派）评审人同机构者跳过；空机构不限制
-      .filter(({ j }) => eligible[i][j] && !placed.has(`${i}_${j}`) && !(organizations[j] && usedOrgsByPaper[i].has(organizations[j])))
-      .sort((a, b) => {
-        if ((a.matched.length > 0 ? 1 : 0) !== (b.matched.length > 0 ? 1 : 0)) return b.matched.length - a.matched.length
-        return (assigned.get(a.r.id) ?? 0) - (assigned.get(b.r.id) ?? 0)
-      })
-    for (let k = 0; k < need; k++) {
-      const pick = choices[k]
+  // 剩余必覆盖主题最多的稿件优先（贪心先解最紧的覆盖需求）
+  const ordered = [...papers.map((_, i) => i)].sort((a, b) => {
+    const ra = (papers[a].requiredTopicTags ?? []).filter((t) => !coveredKeysByPaper[a].has(tagKey(t))).length
+    const rb = (papers[b].requiredTopicTags ?? []).filter((t) => !coveredKeysByPaper[b].has(tagKey(t))).length
+    if (rb !== ra) return rb - ra
+    return demands[b] - demands[a]
+  })
+  for (const i of ordered) {
+    const paper = papers[i]
+    const requiredKeys = (paper.requiredTopicTags ?? []).map(tagKey)
+    let need = demands[i] - forced.forcedByPaperIndex[i].size
+    while (need > 0) {
+      need--
+      const candidates = reviewers
+        .map((r, j) => {
+          if (!eligible[i][j] || placed.has(`${i}_${j}`)) return null
+          if (organizations[j] && usedOrgsByPaper[i].has(organizations[j])) return null
+          const matched = matchedTagsOf(paper, r)
+          const mKeys = new Set(matched.map(tagKey))
+          // 边际必覆盖数：选此人能新覆盖多少个当前仍缺失的必覆盖主题
+          const marginalCover = requiredKeys.filter((k) => !coveredKeysByPaper[i].has(k) && mKeys.has(k)).length
+          return { r, j, matched, marginalCover }
+        })
+        .filter((x): x is { r: Reviewer; j: number; matched: string[]; marginalCover: number } => x !== null)
+        .sort((a, b) => {
+          if (b.marginalCover !== a.marginalCover) return b.marginalCover - a.marginalCover
+          if ((a.matched.length > 0 ? 1 : 0) !== (b.matched.length > 0 ? 1 : 0))
+            return b.matched.length - a.matched.length
+          return (assigned.get(a.r.id) ?? 0) - (assigned.get(b.r.id) ?? 0)
+        })
+      const pick = candidates[0]
       if (!pick) break
-      assigned.set(pick.r.id, (assigned.get(pick.r.id) ?? 0) + 1)
-      placed.add(`${i}_${pick.j}`)
-      if (organizations[pick.j]) usedOrgsByPaper[i].add(organizations[pick.j])
-      assignments.push({
-        paperId: paper.id,
-        reviewerId: pick.r.id,
-        topicMatched: pick.matched.length > 0,
-        matchedTags: pick.matched
-      })
+      place(i, pick.j, false)
     }
   }
 
-  return buildSuccess(reviewers, assignments, totalRequired)
+  // 兜底自检：必覆盖主题未全覆盖说明贪心失败，交回 null（由上层作为不可行处理，不产出违规结果）
+  const coverageOk = papers.every((p, i) =>
+    (p.requiredTopicTags ?? []).every((t) => coveredKeysByPaper[i].has(tagKey(t)))
+  )
+  if (!coverageOk) return null
+  return buildSuccess(papers, reviewers, assignments, totalRequired)
 }

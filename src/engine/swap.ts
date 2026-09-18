@@ -16,11 +16,13 @@
  *     不变，因此「每篇稿件人数不变」与「个人容量不超限」天然保持，无需额外处理；
  *  4. 不违反机构去重：交换后 A 在 q 上的机构、B 在 p 上的机构，都不得与该稿件上
  *     其余评审人（去首尾空白后）的非空机构相同；机构为空者不受限制，空值互不合并。
+ *  5. 不破坏必覆盖主题：交换后 A 在 q、B 在 p 的新命中标签，并上该两篇稿件其余
+ *     在位评审人的命中标签，仍须覆盖两篇各自的全部必覆盖主题。
  *
  * 候选按「主题匹配净增」从高到低排序，供界面预览后由用户确认；
  * 确认时仅在结果层改派，不触碰录入数据（AppData）。
  */
-import { computeMatchedTags } from './solver'
+import { computeMatchedTags, computePaperCoverage, requiredTopicsOf } from './solver'
 import { symmetricDifferenceOfEdges } from './alternatives'
 import type { AppData, AssignmentItem, AssignmentSuccess, Paper, Reviewer } from '../types'
 
@@ -73,6 +75,8 @@ export interface SwapExclusionCounts {
   preassigned: number
   /** 交换后会让同一稿件出现同一机构的两位评审人（机构去重硬约束） */
   organization: number
+  /** 交换后会让某篇稿件的必覆盖主题并集不再完整（必覆盖主题硬约束） */
+  coverage: number
   /** 交换后当前方案与某备选方案的差异条数会低于 N（备选模式多样性约束） */
   diversity: number
 }
@@ -100,6 +104,36 @@ function violatesDiversity(candidate: SwapCandidate, current: AssignmentSuccess,
   if (!guard || guard.otherEdgeSets.length === 0) return false
   const nextEdges = edgesAfterSwap(current.assignments, candidate)
   return guard.otherEdgeSets.some((other) => symmetricDifferenceOfEdges(nextEdges, other) < guard.minDifference)
+}
+
+/**
+ * 必覆盖主题校验：一次一换一只影响两篇稿件（sideA.toPaperId 与 sideB.toPaperId），
+ * 只需复核这两篇在交换完成后的命中标签并集是否仍覆盖各自的全部必覆盖主题。
+ * 两位参与互换者按“离开原稿、换入新稿”计入；无必覆盖主题的稿件直接通过。
+ */
+function violatesCoverage(
+  candidate: SwapCandidate,
+  current: AssignmentSuccess,
+  paperMap: Map<string, Paper>,
+  reviewerMap: Map<string, Reviewer>
+): boolean {
+  const affected = [candidate.sideA.toPaperId, candidate.sideB.toPaperId]
+  const leaving = new Set([candidate.reviewerAId, candidate.reviewerBId])
+  for (const paperId of new Set(affected)) {
+    const paper = paperMap.get(paperId)
+    if (!paper) continue
+    const required = requiredTopicsOf(paper)
+    if (required.length === 0) continue
+    // 交换后该稿件在位的评审人：剔除两位互换者中离开本稿者，加入换入者
+    const reviewerIds = current.assignments
+      .filter((a) => a.paperId === paperId && !leaving.has(a.reviewerId))
+      .map((a) => a.reviewerId)
+    if (candidate.sideA.toPaperId === paperId) reviewerIds.push(candidate.sideA.reviewerId)
+    if (candidate.sideB.toPaperId === paperId) reviewerIds.push(candidate.sideB.reviewerId)
+    const assignedReviewers = reviewerIds.map((id) => reviewerMap.get(id)).filter((r): r is Reviewer => !!r)
+    if (!computePaperCoverage(paper, assignedReviewers, required).satisfied) return true
+  }
+  return false
 }
 
 function matchInfo(paper: Paper | undefined, reviewer: Reviewer | undefined): { tags: string[]; matched: boolean } {
@@ -152,7 +186,15 @@ export function enumerateSwaps(
   reviewerBId: string,
   guard?: DiversityGuard
 ): SwapEnumeration {
-  const excluded: SwapExclusionCounts = { samePaper: 0, conflict: 0, duplicate: 0, preassigned: 0, organization: 0, diversity: 0 }
+  const excluded: SwapExclusionCounts = {
+    samePaper: 0,
+    conflict: 0,
+    duplicate: 0,
+    preassigned: 0,
+    organization: 0,
+    coverage: 0,
+    diversity: 0
+  }
   if (!reviewerAId || !reviewerBId || reviewerAId === reviewerBId) {
     return { candidates: [], excluded }
   }
@@ -252,7 +294,13 @@ export function enumerateSwaps(
 
       const tentative: SwapCandidate = { reviewerAId, reviewerBId, sideA, sideB, deltaMatches }
 
-      // 排除项 5（备选模式）：互换后当前方案与任一其余方案的差异条数会跌破 N
+      // 排除项 5：交换后任一受影响稿件的必覆盖主题并集不再完整（必覆盖主题硬约束）
+      if (violatesCoverage(tentative, result, paperMap, reviewerMap)) {
+        excluded.coverage++
+        continue
+      }
+
+      // 排除项 6（备选模式）：互换后当前方案与任一其余方案的差异条数会跌破 N
       if (violatesDiversity(tentative, result, guard)) {
         excluded.diversity++
         continue
@@ -377,17 +425,41 @@ export function applySwapCandidate(
     orgsByPaper.set(a.paperId, set)
   }
 
+  // 必覆盖主题防御性复核：互换影响到的两篇稿件，交换后命中标签并集仍须覆盖全部必覆盖主题
+  for (const paperId of new Set([sideA.toPaperId, sideB.toPaperId])) {
+    const paper = paperMap.get(paperId)
+    if (!paper) continue
+    const assignedRv = next
+      .filter((a) => a.paperId === paperId)
+      .map((a) => reviewerMapForCheck.get(a.reviewerId))
+      .filter((r): r is Reviewer => !!r)
+    if (!computePaperCoverage(paper, assignedRv).satisfied) return null
+  }
+
   // 备选模式兜底复核：应用互换后的关系集合与每个其余方案的差异条数仍须 ≥ N
   if (guard && guard.otherEdgeSets.length > 0) {
     const nextEdges = edgesAfterSwap(next, candidate)
     if (guard.otherEdgeSets.some((other) => symmetricDifferenceOfEdges(nextEdges, other) < guard.minDifference)) return null
   }
 
+  // 重建逐稿必覆盖主题覆盖明细（只重算，不改变任何分派）
+  const paperCoverage = (result.paperCoverage ?? []).map((c) => {
+    if (c.paperId !== sideA.toPaperId && c.paperId !== sideB.toPaperId) return c
+    const paper = paperMap.get(c.paperId)
+    if (!paper) return c
+    const assignedRv = next
+      .filter((a) => a.paperId === c.paperId)
+      .map((a) => reviewerMapForCheck.get(a.reviewerId))
+      .filter((r): r is Reviewer => !!r)
+    return computePaperCoverage(paper, assignedRv)
+  })
+
   const topicMatches = next.filter((a) => a.topicMatched).length
   return {
     feasible: true,
     assignments: next,
     loads,
+    paperCoverage,
     objective: {
       topicMatches,
       maxLoad: Math.max(0, ...loads.map((l) => l.assigned)),

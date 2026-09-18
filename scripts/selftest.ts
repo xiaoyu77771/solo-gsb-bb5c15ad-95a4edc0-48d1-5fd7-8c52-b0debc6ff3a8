@@ -1,4 +1,4 @@
-import { solveAssignment, solveAssignmentBatch, computeMatchedTags } from '../src/engine/solver'
+import { solveAssignment, solveAssignmentBatch, computeMatchedTags, computePaperCoverage } from '../src/engine/solver'
 import { runStressTest, stressFingerprint } from '../src/engine/stress'
 import { enumerateSwaps, applySwapCandidate, type SwapCandidate } from '../src/engine/swap'
 import { symmetricDifference, validateBatchOptions } from '../src/engine/alternatives'
@@ -22,7 +22,13 @@ const mk = (
   reviewers: AppData['reviewers'],
   preAssignments: AppData['preAssignments'] = []
 ): AppData => ({ papers, reviewers, preAssignments })
-const P = (id: string, title: string, reviewsRequired: number, tags: string[] = []) => ({ id: id, title, reviewsRequired, tags })
+const P = (id: string, title: string, reviewsRequired: number, tags: string[] = [], requiredTopicTags: string[] = []) => ({
+  id,
+  title,
+  reviewsRequired,
+  tags,
+  requiredTopicTags
+})
 const R = (
   id: string,
   name: string,
@@ -298,10 +304,16 @@ function makeSuccess(d: AppData, pairs: Array<[string, string]>): AssignmentSucc
   const counts = new Map<string, number>()
   for (const a of assignments) counts.set(a.reviewerId, (counts.get(a.reviewerId) ?? 0) + 1)
   const loads = d.reviewers.map((r) => ({ reviewerId: r.id, assigned: counts.get(r.id) ?? 0, capacity: r.capacity }))
+  // 覆盖明细：复用求解器同一口径，保证受控输入的 paperCoverage 与分派一致
+  const paperCoverage = d.papers.map((paper) => {
+    const assignedRv = pairs.filter(([pid]) => pid === paper.id).map(([, rid]) => d.reviewers.find((r) => r.id === rid)!)
+    return computePaperCoverage(paper, assignedRv)
+  })
   return {
     feasible: true,
     assignments,
     loads,
+    paperCoverage,
     objective: {
       topicMatches: assignments.filter((a) => a.topicMatched).length,
       maxLoad: Math.max(0, ...loads.map((l) => l.assigned)),
@@ -1110,6 +1122,284 @@ const PA = (id: string, paperId: string, reviewerId: string) => ({ id, paperId, 
   // 无守卫时行为与原来一致（向后兼容）
   const enNoGuard = enumerateSwaps(d, s2, 'a', 'c')
   check('无守卫时 diversity 计数为 0、候选正常', enNoGuard.candidates.length === 1 && enNoGuard.excluded.diversity === 0)
+}
+
+/* ============================ 必覆盖主题（硬约束） ============================ */
+
+// 48. 基本覆盖：两位评审人各命中一个必覆盖主题，并集覆盖即可行
+{
+  const d = mk(
+    [P('p1', '交叉稿', 2, ['X', 'Y'], ['X', 'Y'])],
+    [R('a', '甲', 2, ['X']), R('b', '乙', 2, ['Y']), R('c', '丙', 2, [])]
+  )
+  const res = solveAssignment(d)
+  console.log('用例48 必覆盖主题并集覆盖')
+  check('可行', res.feasible, res.feasible ? '' : JSON.stringify(res.reasons.map((r) => r.kind)))
+  if (res.feasible) {
+    const ids = res.assignments.filter((a) => a.paperId === 'p1').map((a) => a.reviewerId)
+    check('甲乙同时入选（并集覆盖 X、Y）', ids.includes('a') && ids.includes('b'), JSON.stringify(ids))
+    const cov = res.paperCoverage.find((c) => c.paperId === 'p1')!
+    check('覆盖明细 satisfied 且两项全覆盖', cov.satisfied && cov.requiredTopics.length === 2 && cov.missingTopics.length === 0)
+    check('coveredBy 记录命中评审人（X→甲，Y→乙）', cov.coveredBy['X']?.includes('a') && cov.coveredBy['Y']?.includes('b'))
+  }
+}
+
+// 48b. 一位评审人命中多个必覆盖主题：单人即可覆盖，第二人可任意（不强制两人都匹配）
+{
+  const d = mk(
+    [P('p1', '交叉稿', 2, ['X', 'Y'], ['X', 'Y'])],
+    [R('a', '甲', 2, ['X', 'Y']), R('b', '乙', 2, []), R('c', '丙', 2, [])]
+  )
+  const res = solveAssignment(d)
+  console.log('用例48b 单人覆盖多个必覆盖主题')
+  check('可行（甲一人并集即覆盖 X、Y）', res.feasible, JSON.stringify(res.feasible ? '' : res.reasons))
+  if (res.feasible) {
+    const cov = res.paperCoverage.find((c) => c.paperId === 'p1')!
+    check('两主题都由甲命中也视为覆盖', cov.satisfied && cov.coveredBy['X'].includes('a') && cov.coveredBy['Y'].includes('a'))
+  }
+}
+
+// 49. 严格不可覆盖：必覆盖主题无人擅长 → 整体停止，指出稿件与缺失主题
+{
+  const d = mk(
+    [P('p1', 'A', 2, ['X', 'Z'], ['X', 'Z'])],
+    [R('a', '甲', 2, ['X']), R('b', '乙', 2, ['X']), R('c', '丙', 2, [])]
+  )
+  const res = solveAssignment(d)
+  console.log('用例49 必覆盖主题严格不可覆盖')
+  check('不可行', !res.feasible)
+  if (!res.feasible) {
+    const r = res.reasons.find((x) => x.kind === 'topic-coverage')
+    check('给出 topic-coverage 原因', !!r, JSON.stringify(res.reasons.map((x) => x.kind)))
+    const iss = r?.coverageIssues?.[0]
+    check('定位稿件 p1 与缺失主题 Z', iss?.paperId === 'p1' && iss.missingTopics.includes('Z') && iss.strictlyUncoverable, JSON.stringify(iss))
+    check('X 不在缺失列表（有人能覆盖）', iss && !iss.missingTopics.includes('X'))
+    check('无部分结果', !('assignments' in res))
+  }
+}
+
+// 49b. 唯一能命中者声明利益冲突 → 严格不可覆盖（冲突与覆盖共同生效）
+{
+  const d = mk(
+    [P('p1', 'A', 2, ['X'], ['X'])],
+    [R('a', '甲', 2, ['X'], ['p1']), R('b', '乙', 2, []), R('c', '丙', 2, [])]
+  )
+  const res = solveAssignment(d)
+  console.log('用例49b 命中者冲突→必覆盖不可行')
+  check('不可行', !res.feasible)
+  if (!res.feasible) {
+    const iss = res.reasons.find((x) => x.kind === 'topic-coverage')?.coverageIssues?.[0]
+    check('报 topic-coverage 且 X 严格不可覆盖', iss?.missingTopics.includes('X') && iss.strictlyUncoverable, JSON.stringify(iss))
+  }
+}
+
+// 50. 容量竞争型缺口：唯一能覆盖 X 的评审人容量被另一篇稿件占满（单稿各自可覆盖，共同求解失败）
+{
+  // p1、p2 各需 1 且都必覆盖 X；只有甲擅长 X，甲容量 1。任一单稿都可由甲覆盖，
+  // 但两篇同时求解甲只能评一篇 → 竞争型缺口（strictlyUncoverable=false）。
+  const d = mk(
+    [P('p1', 'A', 1, ['X'], ['X']), P('p2', 'B', 1, ['X'], ['X'])],
+    [R('a', '甲', 1, ['X']), R('b', '乙', 2, []), R('c', '丙', 2, [])]
+  )
+  const res = solveAssignment(d)
+  console.log('用例50 必覆盖主题容量竞争')
+  check('不可行（容量竞争）', !res.feasible)
+  if (!res.feasible) {
+    const r = res.reasons.find((x) => x.kind === 'topic-coverage')
+    check('给出 topic-coverage 原因', !!r, JSON.stringify(res.reasons.map((x) => x.kind)))
+    const issues = r?.coverageIssues ?? []
+    check('两篇稿件都被指出', issues.length === 2 && issues.every((i) => i.missingTopics.includes('X')), JSON.stringify(issues))
+    check('标记为容量竞争（非严格不可覆盖）', issues.every((i) => !i.strictlyUncoverable))
+  }
+  // 提高甲容量到 2 → 可行
+  const d2 = mk(d.papers, [R('a', '甲', 2, ['X']), R('b', '乙', 2, []), R('c', '丙', 2, [])])
+  const res2 = solveAssignment(d2)
+  console.log('用例50b 扩容后竞争解除')
+  check('甲容量 2 后可行且甲评两篇', res2.feasible && res2.assignments.filter((x) => x.reviewerId === 'a').length === 2, JSON.stringify(res2.feasible ? '' : res2.reasons))
+}
+
+// 51. 机构去重与必覆盖共同生效：能命中 X 的两人同机构，同稿至多取一人 → 仍需覆盖，
+// 只有一位名额能命中时并不违约（一个人命中即可）；构造“必须两人分别命中两个主题但同机构”场景：
+// p1 需 2，必覆盖 X、Y；能命中 X 的都在清华、能命中 Y 的也都在清华 → 两人同机构不能同稿 → 严格不可覆盖
+{
+  const d = mk(
+    [P('p1', 'A', 2, ['X', 'Y'], ['X', 'Y'])],
+    [
+      R('ax', '甲X', 2, ['X'], [], '清华'),
+      R('ay', '乙Y', 2, ['Y'], [], '清华'),
+      R('bz', '丙无', 2, [], [], '北大')
+    ]
+  )
+  const res = solveAssignment(d)
+  console.log('用例51 机构去重与必覆盖共同生效')
+  check('不可行（X、Y 命中者同机构不能同稿）', !res.feasible)
+  if (!res.feasible) {
+    const issues = res.reasons.find((x) => x.kind === 'topic-coverage')?.coverageIssues ?? []
+    check('至少一个主题被标记严格不可覆盖', issues.some((i) => i.strictlyUncoverable), JSON.stringify(issues))
+  }
+}
+
+// 52. 预指派与必覆盖共同求解：预指派者不命中，另一名额必须选命中者
+{
+  const d = mk(
+    [P('p1', 'A', 2, ['X'], ['X'])],
+    [R('a', '甲', 2, ['X']), R('b', '乙', 2, []), R('c', '丙', 2, ['X'])],
+    [PA('pa1', 'p1', 'b')]
+  )
+  const res = solveAssignment(d)
+  console.log('用例52 预指派+必覆盖')
+  check('可行', res.feasible, JSON.stringify(res.feasible ? '' : res.reasons))
+  if (res.feasible) {
+    const ids = res.assignments.filter((x) => x.paperId === 'p1').map((x) => x.reviewerId)
+    check('乙被预指派，且另一名额为命中 X 者（甲或丙）', ids.includes('b') && (ids.includes('a') || ids.includes('c')), JSON.stringify(ids))
+  }
+  // 预指派不命中 X 且需求仅 1 时该名额被占满，无自由名额可补 → 覆盖失败（预指派预检本身合法）
+  const d2 = mk(
+    [P('p1', 'A', 1, ['X'], ['X'])],
+    [R('a', '甲', 2, ['X']), R('b', '乙', 2, [])],
+    [PA('pa2', 'p1', 'b')]
+  )
+  const res2 = solveAssignment(d2)
+  console.log('用例52b 预指派占满唯一名额但无人命中')
+  check('不可行且不是预指派预检问题（是覆盖失败）', !res2.feasible && res2.reasons.some((x) => x.kind === 'topic-coverage') && !res2.reasons.some((x) => x.kind === 'preassignment'), JSON.stringify(res2.feasible ? '' : res2.reasons.map((x) => x.kind)))
+}
+
+// 53. 互换排除会破坏必覆盖主题覆盖的候选
+{
+  // p1 必覆盖 X：现状 a 评 p1（命中 X）、b 评 p2；枚举 a×b 唯一交叉对换后
+  // b→p1 不命中 X、a→p2 → p1 的 X 覆盖被破坏 → 必须排除。
+  const d = mk(
+    [P('p1', '需X', 1, ['X'], ['X']), P('p2', '系统', 1, ['SYS'])],
+    [R('a', 'Alice', 2, ['X']), R('b', 'Bob', 2, ['SYS']), R('c', 'Carol', 2, [])]
+  )
+  const base = makeSuccess(d, [
+    ['p1', 'a'],
+    ['p2', 'b']
+  ])
+  const en = enumerateSwaps(d, base, 'a', 'b')
+  console.log('用例53 互换保护必覆盖主题')
+  check('破坏覆盖的候选=0，coverage 计数=1', en.candidates.length === 0 && en.excluded.coverage === 1, JSON.stringify(en.excluded))
+  // 防御性应用也拒绝伪造候选
+  const bogus: SwapCandidate = {
+    reviewerAId: 'a',
+    reviewerBId: 'b',
+    sideA: { reviewerId: 'a', fromPaperId: 'p1', toPaperId: 'p2', fromMatchedTags: ['X'], toMatchedTags: [], fromMatched: true, toMatched: false },
+    sideB: { reviewerId: 'b', fromPaperId: 'p2', toPaperId: 'p1', fromMatchedTags: ['SYS'], toMatchedTags: [], fromMatched: true, toMatched: false },
+    deltaMatches: -2
+  }
+  check('applySwapCandidate 拒绝破坏覆盖的候选', applySwapCandidate(d, base, bogus) === null)
+}
+
+// 53b. 互换不破坏覆盖时正常放行（换入者也能命中必覆盖主题）
+{
+  // p1 必覆盖 X：a、c 都擅长 X；现状 a 评 p1、b 评 p2（b 擅长 SYS），c 无任务无法枚举。
+  // 改为：a 评 p2、b 评 p1 的现状不合法（p1 丢 X）。因此构造四位评审人：
+  // 现状 a→p1(X 命中)、b→p2；c(X) 评另一篇 p3、d 评 p3。枚举 a×c：a(p1)×c(p3)
+  // 换后 c→p1 仍命中 X → 放行。
+  const d = mk(
+    [P('p1', '需X', 1, ['X'], ['X']), P('p2', 'SYS', 1, ['SYS']), P('p3', 'C', 2, ['X'])],
+    [R('a', 'Alice', 3, ['X']), R('b', 'Bob', 3, ['SYS']), R('c', 'Carol', 3, ['X']), R('dd', 'Dave', 3, [])]
+  )
+  const res = makeSuccess(d, [
+    ['p1', 'a'],
+    ['p2', 'b'],
+    ['p3', 'c'],
+    ['p3', 'dd']
+  ])
+  const en = enumerateSwaps(d, res, 'a', 'c')
+  console.log('用例53b 换入者同样命中必覆盖主题→放行')
+  check('候选不被 coverage 排除（coverage=0）', en.candidates.length === 1 && en.excluded.coverage === 0, JSON.stringify([en.candidates.length, en.excluded]))
+  const next = en.candidates[0] ? applySwapCandidate(d, res, en.candidates[0]) : null
+  check('应用后 p1 覆盖明细仍 satisfied', next?.paperCoverage.find((c) => c.paperId === 'p1')?.satisfied === true)
+  check('应用后覆盖明细记录 X 由 c 命中', next?.paperCoverage.find((c) => c.paperId === 'p1')?.coveredBy['X'].includes('c'))
+}
+
+// 54. 备选模式：必覆盖主题在所有方案中都被满足
+{
+  const d = mk(
+    [P('p1', 'A', 2, ['X', 'Y'], ['X', 'Y']), P('p2', 'B', 1)],
+    [R('a', '甲', 3, ['X']), R('b', '乙', 3, ['Y']), R('c', '丙', 3, ['X', 'Y']), R('dd', '丁', 3, [])]
+  )
+  const out = solveAssignmentBatch(d, 2, 2)
+  console.log('用例54 备选方案均满足必覆盖')
+  if (out.feasible && (out as { kind?: string }).kind === 'batch') {
+    const sols = (out as any).solutions as AssignmentSuccess[]
+    check('每个方案逐稿覆盖明细都 satisfied', sols.every((s) => s.paperCoverage.every((c) => c.satisfied)))
+    check('每个方案 p1 都同时覆盖 X 与 Y', sols.every((s) => {
+      const cov = s.paperCoverage.find((c) => c.paperId === 'p1')!
+      return cov.coveredTopics.includes('X') && cov.coveredTopics.includes('Y')
+    }))
+  } else {
+    check('批量求解成功', false, JSON.stringify((out as any).reasons))
+  }
+}
+
+// 55. JSON 导出包含每篇覆盖明细
+{
+  const { buildExportPayload } = await import('../src/exporter')
+  const d = mk(
+    [P('p1', 'A', 2, ['X', 'Y'], ['X']), P('p2', 'B', 1)],
+    [R('a', '甲', 3, ['X']), R('b', '乙', 3, ['Y']), R('c', '丙', 3, [])]
+  )
+  const res = solveAssignment(d)
+  console.log('用例55 导出覆盖明细')
+  check('求解成功', res.feasible)
+  if (res.feasible) {
+    const payload = buildExportPayload(d, res)
+    const c1 = payload.paperCoverage.find((c) => c.paperId === 'p1')
+    const c2 = payload.paperCoverage.find((c) => c.paperId === 'p2')
+    check('p1 导出 requiredTopics=[X] 且 satisfied', c1?.requiredTopics.includes('X') && c1.satisfied && c1.missingTopics.length === 0)
+    check('coveredBy 带评审人 id 与姓名', c1 && c1.coveredBy['X'][0].reviewerId === 'a' && c1.coveredBy['X'][0].reviewerName === '甲')
+    check('未设置必覆盖主题的 p2 也出现在明细中且为空', c2 && c2.requiredTopics.length === 0 && c2.satisfied)
+  }
+}
+
+// 56. 旧数据无 requiredTopicTags 字段：默认无必覆盖主题，求解/覆盖明细正常
+{
+  const legacy = {
+    papers: [{ id: 'p1', title: 'A', reviewsRequired: 1, tags: ['X'] }],
+    reviewers: [R('a', '甲', 1, ['X'])]
+  }
+  console.log('用例56 旧数据无必覆盖字段')
+  // @ts-expect-error 故意构造缺字段旧结构
+  const res = solveAssignment(legacy)
+  check('可正常求解', res.feasible)
+  if (res.feasible) {
+    const cov = res.paperCoverage.find((c) => c.paperId === 'p1')
+    check('覆盖明细存在且必覆盖主题为空、satisfied', cov && cov.requiredTopics.length === 0 && cov.satisfied)
+  }
+}
+
+// 57. 必覆盖候选项归一化：大小写/空白不敏感；残留（已删除标签）自动丢弃
+{
+  const { requiredTopicsOf } = await import('../src/engine/solver')
+  console.log('用例57 必覆盖主题归一化与残留剪除')
+  // 选择写法与标签写法大小写/空白不同：按标签侧写法对齐
+  const r1 = requiredTopicsOf({ id: 'p1', title: 'A', reviewsRequired: 1, tags: ['Machine Learning', 'NLP'], requiredTopicTags: ['  machine learning '] })
+  check('空白/大小写归一化并保留标签侧写法', r1.length === 1 && r1[0] === 'Machine Learning', JSON.stringify(r1))
+  // 已从标签中删除的旧选择被丢弃
+  const r2 = requiredTopicsOf({ id: 'p2', title: 'B', reviewsRequired: 1, tags: ['NLP'], requiredTopicTags: ['NLP', 'Ghost'] })
+  check('不在标签集合内的残留项丢弃', r2.length === 1 && r2[0] === 'NLP', JSON.stringify(r2))
+  // 重复选择去重
+  const r3 = requiredTopicsOf({ id: 'p3', title: 'C', reviewsRequired: 1, tags: ['X', 'x'], requiredTopicTags: ['X', 'x'] })
+  check('同键重复去重', r3.length === 1, JSON.stringify(r3))
+}
+
+// 58. 数据指纹随必覆盖主题变化
+{
+  const d1 = mk([P('p1', 'A', 1, ['X'], [])], [R('a', '甲', 2, ['X']), R('b', '乙', 1)])
+  const d2 = mk([P('p1', 'A', 1, ['X'], ['X'])], [R('a', '甲', 2, ['X']), R('b', '乙', 1)])
+  console.log('用例58 必覆盖主题进入数据指纹')
+  check('设置必覆盖主题后指纹改变（压力测试结果过期）', stressFingerprint(d1) !== stressFingerprint(d2))
+  // 覆盖不可行时压力测试不可运行
+  const out = runStressTest(d2)
+  check('必覆盖可满足时压力测试可运行（甲容量2）', out.runnable)
+  const d3 = mk(
+    [P('p1', 'A', 1, ['X'], ['X']), P('p2', 'B', 1, ['X'], ['X'])],
+    [R('a', '甲', 1, ['X']), R('b', '乙', 1, [])]
+  )
+  const out3 = runStressTest(d3)
+  check('覆盖不可行时压力测试不可运行', !out3.runnable && 'reasons' in out3 && out3.reasons.some((m) => m.includes('必覆盖')))
 }
 
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`)

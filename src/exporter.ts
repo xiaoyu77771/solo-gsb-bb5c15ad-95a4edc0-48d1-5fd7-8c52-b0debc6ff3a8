@@ -33,6 +33,17 @@ export interface ExportPayload {
     /** 是否来自预指派硬约束（非预指派缺省为 false） */
     preassigned: boolean
   }>
+  /** 每篇稿件的必覆盖主题覆盖明细（无必覆盖主题的稿件 requiredTopics 为空数组） */
+  paperCoverage: Array<{
+    paperId: string
+    paperTitle: string
+    requiredTopics: string[]
+    coveredTopics: string[]
+    missingTopics: string[]
+    satisfied: boolean
+    /** 覆盖每个必覆盖主题的评审人 id 与姓名 */
+    coveredBy: Record<string, Array<{ reviewerId: string; reviewerName: string }>>
+  }>
   reviewerLoads: Array<{
     reviewerId: string
     reviewerName: string
@@ -74,6 +85,20 @@ export function buildExportPayload(
       assigned: l.assigned,
       capacity: l.capacity,
       utilization: l.capacity > 0 ? Number((l.assigned / l.capacity).toFixed(3)) : 0
+    })),
+    paperCoverage: (result.paperCoverage ?? []).map((c) => ({
+      paperId: c.paperId,
+      paperTitle: paperMap.get(c.paperId)?.title ?? c.paperId,
+      requiredTopics: c.requiredTopics,
+      coveredTopics: c.coveredTopics,
+      missingTopics: c.missingTopics,
+      satisfied: c.satisfied,
+      coveredBy: Object.fromEntries(
+        Object.entries(c.coveredBy).map(([topic, ids]) => [
+          topic,
+          ids.map((id) => ({ reviewerId: id, reviewerName: reviewerMap.get(id)?.name ?? id }))
+        ])
+      )
     }))
   }
 }

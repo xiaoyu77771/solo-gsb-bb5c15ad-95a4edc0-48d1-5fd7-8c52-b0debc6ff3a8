@@ -1246,3 +1246,142 @@ body {
   align-items: center;
   flex-wrap: wrap;
 }
+
+/* ---------------- 必覆盖主题（稿件编辑区） ---------------- */
+.required-topics-box {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin: 2px 0 4px;
+  background: rgba(79, 140, 255, 0.05);
+}
+.required-topics-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+.required-topics-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+.required-topics-options {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.required-topic-chip {
+  font-size: 12px;
+  padding: 3px 11px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.required-topic-chip:hover {
+  border-color: var(--blue);
+  color: var(--text);
+}
+.required-topic-chip--on {
+  background: rgba(251, 191, 36, 0.16);
+  border-color: rgba(251, 191, 36, 0.55);
+  color: var(--amber);
+  font-weight: 600;
+}
+.required-topics-empty {
+  margin: 2px 0;
+}
+
+/* ---------------- 必覆盖主题结果明细 ---------------- */
+.mini-tag--red {
+  background: rgba(248, 113, 113, 0.16);
+  color: var(--red);
+}
+.coverage-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-radius: 8px;
+  padding: 7px 11px;
+  margin: 2px 0 10px;
+  border: 1px solid var(--border);
+}
+.coverage-line--ok {
+  background: rgba(52, 211, 153, 0.07);
+  border-color: rgba(52, 211, 153, 0.35);
+}
+.coverage-line--bad {
+  background: rgba(248, 113, 113, 0.08);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+.coverage-line-title {
+  font-weight: 700;
+  font-size: 12.5px;
+}
+.coverage-line-status {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.coverage-line--ok .coverage-line-status {
+  color: var(--green);
+}
+.coverage-line--bad .coverage-line-status {
+  color: var(--red);
+}
+.coverage-topics {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+}
+.coverage-topic {
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-style: normal;
+}
+.coverage-topic--ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.coverage-topic--bad {
+  background: rgba(248, 113, 113, 0.16);
+  color: var(--red);
+}
+.coverage-topic-by {
+  font-style: normal;
+  opacity: 0.75;
+  margin-left: 3px;
+}
+
+/* ---------------- 必覆盖主题失败诊断表 ---------------- */
+.coverage-issue-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.coverage-issue-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.4fr) 2fr 110px;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  font-size: 13px;
+}
+.coverage-issue-head {
+  background: var(--panel-2);
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.coverage-missing-tag {
+  margin-right: 5px;
+}

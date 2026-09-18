@@ -39,7 +39,7 @@ export function PapersPanel({
   const add = () =>
     onChange([
       ...papers,
-      { id: createId('paper'), title: `稿件 ${papers.length + 1}`, reviewsRequired: 2, tags: [] }
+      { id: createId('paper'), title: `稿件 ${papers.length + 1}`, reviewsRequired: 2, tags: [], requiredTopicTags: [] }
     ])
 
   // 派生预指派状态（有效 / 失效）。失效关系不会被静默丢弃。
@@ -148,6 +148,13 @@ function PaperCard({
     .filter((r) => !assignedReviewerIds.has(r.id))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN') || a.id.localeCompare(b.id))
 
+  // 标签变化时同步剪除已不在标签集合内的必覆盖主题（大小写/空白归一化后比对，保留标签侧写法）
+  const handleTagsChange = (tags: string[]) => {
+    const keys = new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))
+    const requiredTopicTags = (paper.requiredTopicTags ?? []).filter((t) => keys.has(t.trim().toLowerCase()))
+    onUpdate(paper.id, { tags, requiredTopicTags })
+  }
+
   return (
     <div className="card">
       <div className="card-row">
@@ -173,8 +180,11 @@ function PaperCard({
       </div>
       <div className="card-row tags-row">
         <span className="field-label">主题标签</span>
-        <TagInput tags={paper.tags} onChange={(tags) => onUpdate(paper.id, { tags })} placeholder="如：机器学习、NLP" />
+        <TagInput tags={paper.tags} onChange={(tags) => handleTagsChange(tags)} placeholder="如：机器学习、NLP" />
       </div>
+
+      {/* ---- 必覆盖主题（多选，候选仅限本稿已有标签；硬约束） ---- */}
+      <RequiredTopicsPicker paper={paper} onUpdate={onUpdate} />
 
       {/* ---- 预指派：0 至所需人数位必须参加评审的评审人（硬约束） ---- */}
       <div className="preassign-box">
@@ -271,14 +281,81 @@ function PaperCard({
   )
 }
 
+/**
+ * 必覆盖主题多选：候选仅限该稿件已有标签（按大小写不敏感的键去重，展示标签原始写法）。
+ * 生成分派时，命中标签并集必须覆盖全部所选主题，否则整体停止。
+ */
+function RequiredTopicsPicker({
+  paper,
+  onUpdate
+}: {
+  paper: Paper
+  onUpdate: (id: string, patch: Partial<Paper>) => void
+}) {
+  // 候选去重：大小写不敏感，保留标签首次写法；已选项按归一化键对齐候选（兼容旧数据残留）
+  const candidates: { key: string; label: string }[] = []
+  const candidateKeys = new Set<string>()
+  for (const t of paper.tags) {
+    const key = t.trim().toLowerCase()
+    if (!key || candidateKeys.has(key)) continue
+    candidateKeys.add(key)
+    candidates.push({ key, label: t })
+  }
+  const selectedKeys = new Set(
+    (paper.requiredTopicTags ?? []).map((t) => t.trim().toLowerCase()).filter((k) => candidateKeys.has(k))
+  )
+
+  const toggle = (label: string) => {
+    const key = label.trim().toLowerCase()
+    const next = selectedKeys.has(key)
+      ? (paper.requiredTopicTags ?? []).filter((t) => t.trim().toLowerCase() !== key)
+      : [...(paper.requiredTopicTags ?? []), label]
+    onUpdate(paper.id, { requiredTopicTags: next })
+  }
+
+  return (
+    <div className="required-topics-box">
+      <div className="required-topics-head">
+        <span className="required-topics-title">🎯 必覆盖主题</span>
+        <span className="muted">
+          {selectedKeys.size > 0
+            ? `已选 ${selectedKeys.size} 项 · 分派给本稿的评审人命中标签并集必须全部覆盖（硬约束）`
+            : '未设置（可选）· 候选仅限上方已有主题标签'}
+        </span>
+      </div>
+      {candidates.length === 0 ? (
+        <p className="empty-hint required-topics-empty">先在上方添加主题标签后，才能指定必覆盖主题。</p>
+      ) : (
+        <div className="required-topics-options">
+          {candidates.map((c) => {
+            const on = selectedKeys.has(c.key)
+            return (
+              <button
+                type="button"
+                key={c.key}
+                className={`required-topic-chip ${on ? 'required-topic-chip--on' : ''}`}
+                aria-pressed={on}
+                title={on ? '点击取消该必覆盖主题' : '点击设为必覆盖主题'}
+                onClick={() => toggle(c.label)}
+              >
+                {on ? '✓ ' : '＋ '}
+                {c.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function InvalidPreAssignmentSection({
   invalid,
   onRemove
 }: {
   invalid: ReturnType<typeof derivePreAssignments>
   onRemove: (id: string) => void
-}) {
-  return (
+}) {  return (
     <div className="invalid-pre-box">
       <h3 className="subhead invalid-pre-title">
         ⚠ 待处理的失效预指派关系（{invalid.length}）

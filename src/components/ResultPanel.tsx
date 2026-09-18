@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { AppData, AssignmentBatchSuccess, AssignmentResult, AssignmentSuccess } from '../types'
+import type {
+  AppData,
+  AssignmentBatchSuccess,
+  AssignmentResult,
+  AssignmentSuccess,
+  PaperCoverage,
+  Reviewer
+} from '../types'
 import { isBatchResult } from '../types'
 import type { DiversityGuard, SwapCandidate } from '../engine/swap'
 import { assignmentEdges, symmetricDifference } from '../engine/alternatives'
@@ -22,7 +29,8 @@ const kindLabel: Record<string, string> = {
   'global-capacity': '全局容量不足',
   'paper-eligible': '单篇稿件可分配人数不足',
   'subset-bottleneck': '组合性瓶颈（局部容量不足）',
-  preassignment: '预指派硬约束无法满足'
+  preassignment: '预指派硬约束无法满足',
+  'topic-coverage': '必覆盖主题无法满足'
 }
 
 const issueLabel: Record<string, string> = {
@@ -58,7 +66,8 @@ export function ResultPanel({ data, result, stale, onExport, onApplySwap, active
         <ul>
           <li>
             <strong>硬约束</strong>：预指派必须入选、利益冲突回避、评审人容量上限、每篇稿件所需评审人数、
-            同一篇稿件对每个机构至多选择一人（空机构除外），五者必须全部满足；
+            同一篇稿件对每个机构至多选择一人（空机构除外）、每篇稿件的<strong>必覆盖主题</strong>
+            必须被所分派评审人的命中标签并集全部覆盖，六者必须全部满足；
           </li>
           <li>
             <strong>优化目标</strong>：先最大化主题标签匹配，再最小化评审人最大负载（负载均衡）。
@@ -167,12 +176,55 @@ export function ResultPanel({ data, result, stale, onExport, onApplySwap, active
 
 function FailureView({ result }: { result: Extract<AssignmentResult, { feasible: false }> }) {
   const preReason = result.reasons.find((r) => r.kind === 'preassignment')
+  const coverageReason = result.reasons.find((r) => r.kind === 'topic-coverage')
   return (
     <section>
       <div className="result-banner result-banner--fail">
         <h2>✕ 无法生成可行分配</h2>
         <p>以下硬约束无法同时满足，请按提示调整数据后重新生成（不会生成任何部分结果）：</p>
       </div>
+      {coverageReason?.coverageIssues && coverageReason.coverageIssues.length > 0 && (
+        <div className="reason-list">
+          <div className="reason-card coverage-reason-card">
+            <span className="reason-kind">{kindLabel['topic-coverage']}</span>
+            <p className="reason-message">{coverageReason.message}</p>
+            <div className="coverage-issue-table">
+              <div className="coverage-issue-row coverage-issue-head">
+                <span>稿件</span>
+                <span>缺失的必覆盖主题</span>
+                <span>类型</span>
+              </div>
+              {coverageReason.coverageIssues.map((iss, idx) => (
+                <div className="coverage-issue-row" key={`${iss.paperId}-${idx}`}>
+                  <span>《{iss.paperTitle}》</span>
+                  <span>
+                    {iss.missingTopics.map((t) => (
+                      <span className="mini-tag mini-tag--red coverage-missing-tag" key={t}>
+                        {t}
+                      </span>
+                    ))}
+                  </span>
+                  <span>
+                    {iss.strictlyUncoverable ? (
+                      <span className="stress-chip stress-chip--red">无人可覆盖</span>
+                    ) : (
+                      <span className="stress-chip stress-chip--amber">容量竞争</span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {result.reasons
+            .filter((r) => r.kind !== 'topic-coverage' && r.kind !== 'preassignment')
+            .map((r, i) => (
+              <div className="reason-card" key={i}>
+                <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
+                <p className="reason-message">{r.message}</p>
+              </div>
+            ))}
+        </div>
+      )}
       {preReason?.issues && preReason.issues.length > 0 && (
         <div className="reason-list">
           <div className="reason-card preassignment-reason-card">
@@ -226,7 +278,7 @@ function FailureView({ result }: { result: Extract<AssignmentResult, { feasible:
             })()}
           </div>
           {result.reasons
-            .filter((r) => r.kind !== 'preassignment')
+            .filter((r) => r.kind !== 'preassignment' && r.kind !== 'topic-coverage')
             .map((r, i) => (
               <div className="reason-card" key={i}>
                 <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
@@ -237,12 +289,14 @@ function FailureView({ result }: { result: Extract<AssignmentResult, { feasible:
       )}
       {!preReason && (
         <div className="reason-list">
-          {result.reasons.map((r, i) => (
-            <div className="reason-card" key={i}>
-              <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
-              <p className="reason-message">{r.message}</p>
-            </div>
-          ))}
+          {result.reasons
+            .filter((r) => !(r.kind === 'topic-coverage' && r.coverageIssues && r.coverageIssues.length > 0))
+            .map((r, i) => (
+              <div className="reason-card" key={i}>
+                <span className="reason-kind">{kindLabel[r.kind] ?? r.kind}</span>
+                <p className="reason-message">{r.message}</p>
+              </div>
+            ))}
         </div>
       )}
     </section>
@@ -286,6 +340,10 @@ function SolutionView({
     }
     return m
   }, [solution])
+  const coverageByPaper = useMemo(
+    () => new Map((solution.paperCoverage ?? []).map((c) => [c.paperId, c])),
+    [solution]
+  )
 
   const { totalRequired, totalAssigned, topicMatches, maxLoad, preassignedCount } = solution.objective
 
@@ -345,6 +403,7 @@ function SolutionView({
           .filter((p) => p.reviewsRequired > 0)
           .map((p) => {
             const items = byPaper.get(p.id) ?? []
+            const coverage = coverageByPaper.get(p.id)
             return (
               <div className="card assignment-card" key={p.id}>
                 <div className="assignment-title">
@@ -360,6 +419,9 @@ function SolutionView({
                     ))}
                   </div>
                 </div>
+                {coverage && coverage.requiredTopics.length > 0 && (
+                  <PaperCoverageLine coverage={coverage} reviewerMap={reviewerMap} />
+                )}
                 <div className="assignee-list">
                   {items.map((a) => {
                     const rv = reviewerMap.get(a.reviewerId)
@@ -430,5 +492,39 @@ function SolutionView({
         })}
       </div>
     </>
+  )
+}
+
+/* ------------------------------ 必覆盖主题覆盖明细 ------------------------------ */
+
+function PaperCoverageLine({
+  coverage,
+  reviewerMap
+}: {
+  coverage: PaperCoverage
+  reviewerMap: Map<string, Reviewer>
+}) {
+  const ok = coverage.satisfied && coverage.missingTopics.length === 0
+  return (
+    <div className={`coverage-line ${ok ? 'coverage-line--ok' : 'coverage-line--bad'}`}>
+      <span className="coverage-line-title">🎯 必覆盖主题</span>
+      <span className="coverage-line-status">{ok ? `全部 ${coverage.requiredTopics.length} 项已覆盖` : '存在未覆盖主题'}</span>
+      <div className="coverage-topics">
+        {coverage.requiredTopics.map((t) => {
+          const covered = coverage.coveredTopics.includes(t)
+          const by = (coverage.coveredBy[t] ?? []).map((id) => reviewerMap.get(id)?.name ?? id)
+          return (
+            <span
+              key={t}
+              className={`coverage-topic ${covered ? 'coverage-topic--ok' : 'coverage-topic--bad'}`}
+              title={covered ? `由 ${by.join('、')} 命中` : '未被任何分派评审人命中'}
+            >
+              {covered ? '✓' : '✗'} {t}
+              {covered && by.length > 0 && <em className="coverage-topic-by">← {by.join('、')}</em>}
+            </span>
+          )
+        })}
+      </div>
+    </div>
   )
 }

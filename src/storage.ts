@@ -1,11 +1,12 @@
-import type { AppData, PreAssignment, Reviewer } from './types'
+import type { AppData, Paper, PreAssignment, Reviewer } from './types'
 
 const STORAGE_KEY = 'blind-review-desk:data:v1'
 
 /**
- * 兼容旧数据：preAssignments 与 reviewers[].organization 都是后加字段，
+ * 兼容旧数据：preAssignments、reviewers[].organization 与 papers[].requiredTopicTags 都是后加字段，
  * 旧版本 localStorage 中没有这些键。不升级存储 key、不迁移文件，读取时补全即可；
  * 缺少机构字段的评审人按空机构加载（空值仅代表本人，不与其他空值合并）；
+ * 缺少必覆盖主题的稿件按空数组加载（即无必覆盖主题，规则不生效）；
  * 失效（引用已删除）的关系也原样保留，由录入界面显式提示、用户逐条移除。
  */
 function migrate(raw: unknown): AppData | null {
@@ -28,8 +29,20 @@ function migrate(raw: unknown): AppData | null {
   const reviewers: Reviewer[] = (parsed.reviewers as Reviewer[]).map((r) =>
     r && typeof r === 'object' ? { ...r, organization: typeof r.organization === 'string' ? r.organization : '' } : r
   )
+  // 旧本地数据稿件可能缺少“必覆盖主题”字段：默认空数组（无必覆盖主题）；
+  // 容忍脏数据（非数组/含非字符串项），候选与残留剪除在求解归一化阶段完成
+  const papers = (parsed.papers as Paper[]).map((p) =>
+    p && typeof p === 'object'
+      ? {
+          ...p,
+          requiredTopicTags: Array.isArray(p.requiredTopicTags)
+            ? p.requiredTopicTags.filter((t): t is string => typeof t === 'string')
+            : []
+        }
+      : p
+  )
   return {
-    papers: parsed.papers,
+    papers,
     reviewers,
     preAssignments
   }

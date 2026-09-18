@@ -4,7 +4,8 @@
  * 仅在当前录入数据本身满足全部硬约束（可生成方案）时运行：
  * 对每一位容量 > 0 的评审人，分别模拟其“完全缺席”（容量临时置 0，不修改录入数据），
  * 再调用 {@link evaluateHardConstraints} —— 与“生成分派”完全相同的硬约束可行性逻辑
- * （利益冲突 / 容量 / 人数 / 机构去重，含“论文→机构→评审人”层的 Dinic 最大流 + 最小割瓶颈定位）—— 重新判定。
+ * （利益冲突 / 容量 / 人数 / 机构去重 / 必覆盖主题，含“论文→机构→评审人”层的 Dinic 最大流 + 最小割瓶颈定位
+ * 与必覆盖主题覆盖性 ILP 判定）—— 重新判定。
  *
  * 不可行的场景不止报告“总容量不足”，还给出：
  *  - 缺席者；
@@ -29,14 +30,18 @@ import type {
 } from '../types'
 
 /**
- * 录入数据指纹：只纳入与硬约束相关的有效字段（标题/需求/标签/冲突；姓名/机构/容量）。
+ * 录入数据指纹：只纳入与硬约束相关的有效字段（标题/需求/标签/必覆盖主题/冲突；姓名/机构/容量）。
  * 压力测试报告保存运行时指纹，App 用它与当前指纹比对以立即标记“结果已过期”。
  * 可传入已算好的硬约束评估以复用归一化结果（避免每次按键重复跑最大流）。
  */
 export function stressFingerprint(data: AppData, precomputed?: HardConstraintEvaluation): string {
   const hc = precomputed ?? evaluateHardConstraints(data)
   const papers = hc.papers
-    .map((p) => `${p.id}|${p.title}|${p.reviewsRequired}|${[...p.tags].sort().join(',')}`)
+    .map((p, i) => {
+      // 必覆盖主题取归一化结果（与求解口径一致），避免“旧选择写法 vs 现标签写法”的假变化
+      const required = (hc.requiredTopicsByPaper?.[i] ?? p.requiredTopicTags ?? []).slice().sort()
+      return `${p.id}|${p.title}|${p.reviewsRequired}|${[...p.tags].sort().join(',')}|${required.join(',')}`
+    })
     .sort()
   const reviewers = hc.reviewers
     .map(

@@ -9,10 +9,10 @@ export function createSampleData() {
   const r4 = 'rev_dave'
   return {
     papers: [
-      { id: p1, title: '面向大语言模型的高效微调方法', reviewsRequired: 2, tags: ['机器学习', 'NLP'] },
-      { id: p2, title: '图神经网络在推荐系统中的应用', reviewsRequired: 2, tags: ['机器学习', '推荐系统'] },
-      { id: p3, title: '高并发分布式键值存储的一致性优化', reviewsRequired: 2, tags: ['分布式系统', '数据库'] },
-      { id: p4, title: '联邦学习中的隐私泄露攻击与防御', reviewsRequired: 2, tags: ['安全', '机器学习'] }
+      { id: p1, title: '面向大语言模型的高效微调方法', reviewsRequired: 2, tags: ['机器学习', 'NLP'], requiredTopicTags: [] },
+      { id: p2, title: '图神经网络在推荐系统中的应用', reviewsRequired: 2, tags: ['机器学习', '推荐系统'], requiredTopicTags: ['推荐系统'] },
+      { id: p3, title: '高并发分布式键值存储的一致性优化', reviewsRequired: 2, tags: ['分布式系统', '数据库'], requiredTopicTags: [] },
+      { id: p4, title: '联邦学习中的隐私泄露攻击与防御', reviewsRequired: 2, tags: ['安全', '机器学习'], requiredTopicTags: ['安全'] }
     ],
     reviewers: [
       { id: r1, name: 'Alice（机器学习）', organization: '清华大学', tags: ['机器学习', 'NLP', '计算机视觉'], capacity: 2, conflictPaperIds: [p1] },

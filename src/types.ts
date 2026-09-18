@@ -7,6 +7,13 @@ export interface Paper {
   reviewsRequired: number
   /** 主题标签 */
   tags: string[]
+  /**
+   * 必覆盖主题（多选，候选仅限 tags 内已有标签；旧数据缺省为 []）。
+   * 生成分派时，分给该稿件的全部评审人的命中标签并集必须覆盖这里的每个主题（硬约束）。
+   * 存储口径为“稿件侧标签写法”，归一化（去空白/大小写）在求解阶段完成；
+   * 已不在 tags 中的残留项在归一化时丢弃，界面侧在编辑标签时同步剪除。
+   */
+  requiredTopicTags?: string[]
 }
 
 export interface Reviewer {
@@ -59,11 +66,30 @@ export interface ReviewerLoad {
   capacity: number
 }
 
+/**
+ * 单篇稿件的“必覆盖主题”覆盖明细（结果页与 JSON 导出共用）。
+ * 任何成功结果都满足全部必覆盖主题，因此 satisfied 恒为 true；
+ * 未设置必覆盖主题的稿件 requiredTopics 为空数组。
+ */
+export interface PaperCoverage {
+  paperId: string
+  /** 该稿件设置的必覆盖主题（归一化后的稿件侧写法；旧数据为 []） */
+  requiredTopics: string[]
+  /** 实际被分派评审人命中标签并集覆盖到的必覆盖主题 */
+  coveredTopics: string[]
+  /** 未被覆盖的必覆盖主题（成功结果中恒为空，仅防御性保留） */
+  missingTopics: string[]
+  satisfied: boolean
+  /** 覆盖每个必覆盖主题的评审人 id（一个主题可由多位评审人命中） */
+  coveredBy: Record<string, string[]>
+}
+
 export type InfeasibleKind =
   | 'global-capacity'
   | 'paper-eligible'
   | 'subset-bottleneck'
   | 'preassignment'
+  | 'topic-coverage'
 
 /** 预指派关系在“生成分派”预检时被发现的具体问题（逐条列出稿件、评审人与原因） */
 export interface PreAssignmentIssue {
@@ -90,6 +116,21 @@ export interface PreAssignmentIssue {
   message: string
 }
 
+/** 必覆盖主题无法满足时的逐条诊断：指出具体稿件与缺失（无法被任何分派覆盖）的主题 */
+export interface TopicCoverageIssue {
+  paperId: string
+  paperTitle: string
+  /** 缺失的必覆盖主题（稿件侧标签写法，已归一化） */
+  missingTopics: string[]
+  /**
+   * 是否“严格不可覆盖”：即使不考虑跨稿件容量竞争，该稿件也没有任何
+   * （无冲突、机构名额允许、且未被预指派占住）的评审人能命中这些主题。
+   * false 表示单个主题原则上有人能覆盖，但全部硬约束（含其他稿件的容量竞争）
+   * 共同求解时无法同时覆盖。
+   */
+  strictlyUncoverable: boolean
+}
+
 export interface InfeasibleReason {
   kind: InfeasibleKind
   message: string
@@ -101,12 +142,16 @@ export interface InfeasibleReason {
   deficit?: number
   /** preassignment: 逐条预指派问题 */
   issues?: PreAssignmentIssue[]
+  /** topic-coverage: 逐篇稿件的缺失必覆盖主题 */
+  coverageIssues?: TopicCoverageIssue[]
 }
 
 export interface AssignmentSuccess {
   feasible: true
   assignments: AssignmentItem[]
   loads: ReviewerLoad[]
+  /** 每篇稿件的必覆盖主题覆盖明细（逐稿，含未设置必覆盖主题的稿件） */
+  paperCoverage: PaperCoverage[]
   objective: {
     topicMatches: number
     maxLoad: number
